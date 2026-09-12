@@ -252,13 +252,14 @@ func (r *mimoReader) fillSession(s *model.Session) error {
 				met.CacheReadTokens = cm.Tokens.Cache.Read
 				met.CacheWriteTokens = cm.Tokens.Cache.Write
 			}
-			// Duration from created→completed (ms); tok/s from output.
+			// Wall-clock turn duration (created→completed). Includes tool
+			// execution wait, so it is NOT generation speed.
+			// TokensPerSec is left 0: Devin reports provider tokens_per_sec
+			// (output / (total-ttft)); MiMo has no equivalent field. Dividing
+			// output by this wall-clock yields misleading ~10 t/s vs Devin's
+			// hundreds.
 			if cm.Time != nil && cm.Time.Created != nil && cm.Time.Completed != nil && *cm.Time.Completed > *cm.Time.Created {
-				totalMs := float64(*cm.Time.Completed - *cm.Time.Created)
-				met.TotalTimeMs = totalMs
-				if cm.Tokens.Output > 0 && totalMs > 0 {
-					met.TokensPerSec = float64(cm.Tokens.Output) / (totalMs / 1000.0)
-				}
+				met.TotalTimeMs = float64(*cm.Time.Completed - *cm.Time.Created)
 			}
 			m.Metrics = met
 		}
