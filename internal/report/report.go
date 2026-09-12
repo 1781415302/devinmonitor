@@ -59,6 +59,7 @@ func SessionCost(s *model.Session) (cost float64, estimated bool) {
 
 type SessionRow struct {
 	ID           string
+	Source       string
 	Title        string
 	Model        string
 	Mode         string
@@ -83,7 +84,8 @@ func BuildSessionRows(ss []model.Session) []SessionRow {
 		cost, est := SessionCost(&s)
 		p := model.LookupPricing(s.Model)
 		rows = append(rows, SessionRow{
-			ID:            s.ID,
+			ID:            s.DisplayID(),
+			Source:        s.Source,
 			Title:         s.Title,
 			Model:         s.Model,
 			Mode:          s.AgentMode,
@@ -231,8 +233,8 @@ func BuildAgentStats(ss []model.Session) []AgentStats {
 			if len(sa.Task) > 0 {
 				st.TaskLens = append(st.TaskLens, len(sa.Task))
 			}
-			if !st.SessionIDs[s.ID] {
-				st.SessionIDs[s.ID] = true
+			if !st.SessionIDs[s.QualifiedID()] {
+				st.SessionIDs[s.QualifiedID()] = true
 				st.Sessions++
 			}
 		}
@@ -374,8 +376,8 @@ func BuildModelRows(ss []model.Session) []ModelRow {
 			if m.FinishReason != "" {
 				ms.FinishReasons[m.FinishReason]++
 			}
-			if !modelSessions[m.GenerationModel][s.ID] {
-				modelSessions[m.GenerationModel][s.ID] = true
+			if !modelSessions[m.GenerationModel][s.QualifiedID()] {
+				modelSessions[m.GenerationModel][s.QualifiedID()] = true
 			}
 		}
 		// Credit cost attribution: attribute session credit to its model.
@@ -553,7 +555,7 @@ func BuildModelDetail(ss []model.Session, query string) (*ModelDetail, error) {
 			if m.Role != "assistant" || m.GenerationModel != matchedName {
 				continue
 			}
-			sessionIDs[s.ID] = true
+			sessionIDs[s.QualifiedID()] = true
 			if firstUsed.IsZero() || m.CreatedAt.Before(firstUsed) {
 				firstUsed = m.CreatedAt
 			}
@@ -737,8 +739,8 @@ func buildTimeBuckets(ss []model.Session, key func(time.Time) string) []TimeRow 
 				b.Models = append(b.Models, mn)
 			}
 			// Count unique sessions per bucket.
-			if !sessionSeen[k][s.ID] {
-				sessionSeen[k][s.ID] = true
+			if !sessionSeen[k][s.QualifiedID()] {
+				sessionSeen[k][s.QualifiedID()] = true
 				b.Sessions++
 			}
 		}

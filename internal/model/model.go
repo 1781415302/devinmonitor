@@ -4,7 +4,10 @@
 // the reader layer can adapt to schema changes without touching reports/UI.
 package model
 
-import "time"
+import (
+	"strings"
+	"time"
+)
 
 // Session is a normalized Devin CLI session.
 type Session struct {
@@ -39,6 +42,31 @@ type Session struct {
 	// ReadSubAgentCalls counts how many times the main agent called read_subagent
 	// (explicitly waiting for a background subagent to finish).
 	ReadSubAgentCalls int
+	// Source identifies which Devin data store this session came from:
+	// "local", "wsl:<distro>", or empty for single-source mode.
+	Source string
+}
+
+// QualifiedID returns Source + "/" + ID when Source is set, else ID.
+// Used to disambiguate colliding short IDs across Windows and WSL stores.
+func (s Session) QualifiedID() string {
+	if s.Source == "" {
+		return s.ID
+	}
+	return s.Source + "/" + s.ID
+}
+
+// DisplayID is the short label for tables: bare ID unless the session
+// carries a non-local source tag.
+func (s Session) DisplayID() string {
+	if s.Source == "" || s.Source == "local" {
+		return s.ID
+	}
+	// wsl:Ubuntu-18.04 -> wsl
+	if i := strings.Index(s.Source, ":"); i > 0 {
+		return s.Source[:i] + ":" + s.ID
+	}
+	return s.Source + ":" + s.ID
 }
 
 // Message is a single chat message node.

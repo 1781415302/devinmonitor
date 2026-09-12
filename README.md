@@ -190,6 +190,33 @@ DevinMonitor reads `sessions.db` from Devin CLI's data directory:
 
 Override with `--data-dir` or the `DEVIN_DATA_DIR` environment variable.
 
+### Windows + WSL merge
+
+On Windows, installed WSL distros are auto-detected. When a distro has a
+Devin CLI `sessions.db`, devinmonitor copies a snapshot via `wsl.exe`
+into a temp directory (avoids SQLITE_BUSY over `\\wsl.localhost`) and
+merges it with the local store.
+
+```bash
+# Default: local + every WSL distro that has a Devin DB
+devinmonitor sources
+devinmonitor sessions
+
+# Local only
+devinmonitor --no-wsl sessions
+
+# Only specific distros
+devinmonitor --wsl Ubuntu-18.04 sessions
+
+# Explicit --data-dir forces a single source (no WSL merge)
+devinmonitor --data-dir /path/to/cli sessions
+```
+
+After merge:
+- Session IDs are prefixed, e.g. `wsl:halved-noodle`
+- `session wsl:halved-noodle` or `session wsl:Ubuntu-18.04/halved-noodle`
+- `models` / `cost` / `daily` aggregate both sides automatically
+
 The connection is read-only + WAL + `query_only`, so it won't block
 Devin CLI's writes.
 

@@ -70,6 +70,14 @@ type pollMsg struct {
 
 func poll(r reader.Reader) tea.Cmd {
 	return func() tea.Msg {
+		// Multi-source readers (Windows + WSL) re-snapshot secondary stores
+		// when the upstream sessions.db changed.
+		if ref, ok := r.(reader.Refresher); ok {
+			if err := ref.Refresh(); err != nil {
+				// Keep last good data; surface refresh error only if Sessions also fails.
+				_ = err
+			}
+		}
 		ss, err := r.Sessions()
 		return pollMsg{sessions: ss, err: err}
 	}

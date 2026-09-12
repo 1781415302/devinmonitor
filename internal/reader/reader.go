@@ -45,9 +45,128 @@ type Reader interface {
 	Close() error
 }
 
+// Refresher is implemented by readers that can pick up newer upstream data
+// without reopening the process (e.g. re-snapshot WSL stores).
+// Live dashboards call Refresh before each Sessions() poll.
+type Refresher interface {
+	// Refresh reloads any secondary sources. No-op if nothing changed.
+	Refresh() error
+}
+
+// OpenOptions controls multi-source opening.
+type OpenOptions struct {
+	// DataDir forces a single local source when non-empty.
+	DataDir string
+	// IncludeWSL merges WSL distro snapshots (Windows only). Default true
+	// when DataDir is empty; ignored when DataDir is set.
+	IncludeWSL bool
+	// IncludeMiMo merges local MiMoCode mimocode.db when present.
+	IncludeMiMo bool
+	// WSLDistros limits which distros to snapshot (empty = all with Devin DB).
+	WSLDistros []string
+}
+
+// Default multi-source settings (feature packages call Open which honors these).
+var (
+	defaultIncludeWSL  bool     = true
+	defaultIncludeMiMo bool     = true
+	defaultWSLDistros  []string = nil
+)
+
+// SetDefaultIncludeWSL toggles WSL merging for subsequent Open() calls.
+func SetDefaultIncludeWSL(v bool) { defaultIncludeWSL = v }
+
+// SetDefaultIncludeMiMo toggles MiMoCode merging for subsequent Open() calls.
+func SetDefaultIncludeMiMo(v bool) { defaultIncludeMiMo = v }
+
+// SetDefaultWSLDistros limits Open() WSL snapshots to these distros.
+func SetDefaultWSLDistros(distros []string) {
+	defaultWSLDistros = append([]string(nil), distros...)
+}
+
 // Open auto-detects the DB path and returns a Reader for the current schema.
-// dataDir overrides the auto-detected directory when non-empty.
+// dataDir overrides the auto-detected directory when non-empty (single source).
+// When dataDir is empty on Windows, also merges WSL Devin stores by default.
 func Open(dataDir string) (Reader, error) {
+	return OpenWith(OpenOptions{
+		DataDir:     dataDir,
+		IncludeWSL:  defaultIncludeWSL,
+		IncludeMiMo: defaultIncludeMiMo,
+		WSLDistros:  defaultWSLDistros,
+	})
+}
+
+// OpenWith opens one or more sources according to opts.
+func OpenWith(opts OpenOptions) (Reader, error) {
+	local, err := openOne(opts.DataDir)
+	if err != nil {
+		return nil, err
+	}
+	// Explicit --data-dir: single source only.
+	if opts.DataDir != "" {
+		return local, nil
+	}
+
+	// Collect secondary sources (WSL snapshots + MiMo).
+	needMulti := false
+	var wslDistros []string
+	if opts.IncludeWSL && os.Getenv("DEVIN_NO_WSL") != "1" {
+		wslDistros = DetectWSLDistros(opts.WSLDistros)
+		if len(wslDistros) > 0 {
+			needMulti = true
+		}
+	}
+	mimoPath := ""
+	if opts.IncludeMiMo && os.Getenv("DEVIN_NO_MIMO") != "1" {
+		mimoPath = ResolveMiMoDBPath("")
+		if mimoPath != "" {
+			needMulti = true
+		}
+	}
+	if !needMulti {
+		return local, nil
+	}
+
+	sources := []SourceRef{{Label: "local", Reader: local}}
+	m := NewMulti(sources...)
+
+	for _, d := range wslDistros {
+		// Fingerprint before copy so Refresh can detect later writes.
+		mt, sz, _ := WSLDBStat(d)
+		snapDir, err := SnapshotWSLDB(d)
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "devinmonitor: skip wsl %s: %v\n", d, err)
+			continue
+		}
+		r, err := openOne(snapDir)
+		if err != nil {
+			cleanupDir(snapDir)
+			fmt.Fprintf(os.Stderr, "devinmonitor: skip wsl %s: %v\n", d, err)
+			continue
+		}
+		label := "wsl:" + d
+		m.sources = append(m.sources, SourceRef{Label: label, Reader: r})
+		m.AddCleanup(snapDir)
+		m.trackWSLFP(label, d, snapDir, mt, sz)
+	}
+
+	if mimoPath != "" {
+		mr, err := newMiMoReader(mimoPath)
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "devinmonitor: skip mimo: %v\n", err)
+		} else {
+			m.sources = append(m.sources, SourceRef{Label: "mimo", Reader: mr})
+		}
+	}
+
+	if len(m.sources) == 1 {
+		return local, nil
+	}
+	return m, nil
+}
+
+// openOne resolves and opens a single local/snapshot database.
+func openOne(dataDir string) (Reader, error) {
 	path, err := ResolveDBPath(dataDir)
 	if err != nil {
 		return nil, err

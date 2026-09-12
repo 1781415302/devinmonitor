@@ -38,6 +38,9 @@ var (
 	flagStartDay  string
 	flagInterval  int
 	flagDetailed  bool
+	flagNoWSL     bool
+	flagWSLDistro []string
+	flagNoMiMo    bool
 
 	// version is injected at build time via ldflags:
 	//   -ldflags "-X main.version=v0.1.0"
@@ -68,10 +71,16 @@ func main() {
 			if flagLocale != "" {
 				i18n.SetLocale(flagLocale)
 			}
+			reader.SetDefaultIncludeWSL(!flagNoWSL)
+			reader.SetDefaultIncludeMiMo(!flagNoMiMo)
+			reader.SetDefaultWSLDistros(flagWSLDistro)
 		},
 	}
 	root.PersistentFlags().StringVar(&flagDataDir, "data-dir", "", i18n.T("help.dataDir"))
 	root.PersistentFlags().StringVar(&flagLocale, "locale", "", i18n.T("help.locale"))
+	root.PersistentFlags().BoolVar(&flagNoWSL, "no-wsl", false, i18n.T("help.noWSL"))
+	root.PersistentFlags().StringArrayVar(&flagWSLDistro, "wsl", nil, i18n.T("help.wsl"))
+	root.PersistentFlags().BoolVar(&flagNoMiMo, "no-mimo", false, i18n.T("help.noMiMo"))
 
 	// Disable alphabetical sorting so commands appear in the explicit
 	// logical grouping defined below.
@@ -180,13 +189,19 @@ func buildOrderedCommands() []cmdEntry {
 		feat("config"), feat("alias"), feat("pricing"), feat("warehouse"),
 
 		// --- System ---
+		core(cmdSources()),
 		core(cmdMetrics()),
 		core(cmdVersion()),
 	}
 }
 
 func openReader() reader.Reader {
-	r, err := reader.Open(flagDataDir)
+	r, err := reader.OpenWith(reader.OpenOptions{
+		DataDir:     flagDataDir,
+		IncludeWSL:  !flagNoWSL,
+		IncludeMiMo: !flagNoMiMo,
+		WSLDistros:  flagWSLDistro,
+	})
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "%s\n", i18n.T("err.readFail", map[string]interface{}{"Err": err.Error()}))
 		os.Exit(1)
@@ -348,7 +363,10 @@ func cmdSession() *cobra.Command {
 				modelName = s.Model
 			}
 			dur := s.LastActivityAt.Sub(s.CreatedAt)
-			fmt.Printf("%s: %s\n", i18n.T("common.id"), s.ID)
+			fmt.Printf("%s: %s\n", i18n.T("common.id"), s.DisplayID())
+			if s.Source != "" {
+				fmt.Printf("%s: %s\n", i18n.T("common.source"), s.Source)
+			}
 			fmt.Printf("%s: %s\n", i18n.T("common.title"), s.Title)
 			fmt.Printf("%s: %s\n", i18n.T("common.model"), modelName)
 			fmt.Printf("%s: %s\n", i18n.T("common.mode"), s.AgentMode)
@@ -1053,6 +1071,45 @@ func cmdAgents() *cobra.Command {
 				totAvgTask, "-",
 				totAvgOut, "-",
 			)
+			fmt.Println(t.String())
+		},
+	}
+}
+
+// ---- sources ----
+
+func cmdSources() *cobra.Command {
+	return &cobra.Command{
+		Use:   "sources",
+		Short: i18n.T("cmd.sources"),
+		Run: func(cmd *cobra.Command, args []string) {
+			r := openReader()
+			defer r.Close()
+			type row struct {
+				label, path string
+				schema, n   int
+			}
+			var rows []row
+			if mr, ok := r.(*reader.MultiReader); ok {
+				for _, s := range mr.SourcesSummary() {
+					rows = append(rows, row{s.Label, s.Path, s.Schema, s.Sessions})
+				}
+			} else {
+				n := 0
+				if ss, err := r.Sessions(); err == nil {
+					n = len(ss)
+				}
+				rows = append(rows, row{"local", r.DBPath(), r.SchemaVersion(), n})
+			}
+			t := ui.NewTable(
+				i18n.T("common.source"),
+				i18n.T("common.sessions"),
+				"schema",
+				i18n.T("common.path"),
+			).RightAlign(1, 2)
+			for _, e := range rows {
+				t.Row(e.label, fmt.Sprintf("%d", e.n), fmt.Sprintf("%d", e.schema), e.path)
+			}
 			fmt.Println(t.String())
 		},
 	}

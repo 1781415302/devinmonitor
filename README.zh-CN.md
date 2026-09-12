@@ -181,6 +181,59 @@ DevinMonitor 从 Devin CLI 的数据目录读取 `sessions.db`：
 
 可用 `--data-dir` 或 `DEVIN_DATA_DIR` 环境变量覆盖。
 
+### Windows + WSL + MiMo 合并
+
+在 Windows 上，默认自动探测：
+1. **Devin 本机** `%APPDATA%\devin\cli\sessions.db`
+2. **WSL 发行版** 里的 Devin `sessions.db`（`wsl.exe` 快照，避免 SQLITE_BUSY）
+3. **MiMoCode** `~/.local/share/mimocode/mimocode.db`（token/工具用量）
+
+三者合并进同一套报表与 Web 面板。
+
+```bash
+# 默认：本机 + 全部含 Devin DB 的 WSL
+devinmonitor sources
+devinmonitor sessions
+
+# 只看本机
+devinmonitor --no-wsl sessions
+
+# 只合并指定发行版
+devinmonitor --wsl Ubuntu-18.04 sessions
+
+# 指定 --data-dir 时强制单源（不合并 WSL）
+devinmonitor --data-dir /path/to/cli sessions
+```
+
+### Web 用量面板
+
+命令行启动本地 HTTP 面板，浏览器查看（SSE 每 5s 自动刷新，含 WSL 合并）：
+
+```bash
+devinmonitor web                 # http://localhost:19191
+devinmonitor web --port 19273
+devinmonitor web --open          # 启动后自动打开浏览器
+devinmonitor web --no-wsl        # 面板不含 WSL
+devinmonitor web --no-mimo       # 面板不含 MiMo
+```
+
+默认端口 **19191**（避开 8080/3000）。
+
+页面内容：
+- KPI：会话 / 请求 / 输入·输出·缓存 token / 成本 / 数据源数
+- 数据源列表（local + wsl:*）
+- Token 构成条形图
+- 模型用量表（请求、token、速度、成本、占比）
+- 会话表（可按来源筛选）
+- 告警
+
+API：`/api/sessions` `/api/models` `/api/sources` `/api/cost-summary` `/sse`
+
+合并后：
+- 会话 ID 带前缀，如 `wsl:halved-noodle`
+- `session wsl:halved-noodle` 或 `session wsl:Ubuntu-18.04/halved-noodle` 均可
+- `models` / `cost` / `daily` 等报表自动汇总两边用量
+
 连接采用只读 + WAL + `query_only` 模式，不会阻塞 Devin CLI 的写入。
 
 ### Schema 适配
