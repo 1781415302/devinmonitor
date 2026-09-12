@@ -214,7 +214,12 @@ func (r *mimoReader) fillSession(s *model.Session) error {
 	}
 	defer rows.Close()
 
-	var node int
+	type msgRow struct {
+		id string
+		ts int64
+		cm mimoMsg
+	}
+	var msgs []msgRow
 	for rows.Next() {
 		var id string
 		var ts int64
@@ -226,11 +231,27 @@ func (r *mimoReader) fillSession(s *model.Session) error {
 		if err := json.Unmarshal([]byte(raw), &cm); err != nil {
 			continue
 		}
+		msgs = append(msgs, msgRow{id: id, ts: ts, cm: cm})
+	}
+	if err := rows.Err(); err != nil {
+		return err
+	}
+
+	// Cache text-part timings per message (streaming start/end).
+	// Used to approximate Devin-style TTFT and generation speed.
+	timings, err := r.textPartTimings(s.ID)
+	if err != nil {
+		timings = map[string][]partSpan{}
+	}
+
+	var node int
+	for _, mr := range msgs {
+		cm := mr.cm
 		node++
 		m := model.Message{
 			NodeID:    node,
 			Role:      cm.Role,
-			CreatedAt: msToTime(ts),
+			CreatedAt: msToTime(mr.ts),
 		}
 		if cm.Finish != "" {
 			m.FinishReason = cm.Finish
@@ -252,14 +273,34 @@ func (r *mimoReader) fillSession(s *model.Session) error {
 				met.CacheReadTokens = cm.Tokens.Cache.Read
 				met.CacheWriteTokens = cm.Tokens.Cache.Write
 			}
-			// Wall-clock turn duration (created→completed). Includes tool
-			// execution wait, so it is NOT generation speed.
-			// TokensPerSec is left 0: Devin reports provider tokens_per_sec
-			// (output / (total-ttft)); MiMo has no equivalent field. Dividing
-			// output by this wall-clock yields misleading ~10 t/s vs Devin's
-			// hundreds.
+			// Devin: tokens_per_sec = output / (total_time - ttft)
+			// MiMo has no provider field; approximate from text parts:
+			//   ttft  ≈ first text start - message created
+			//   gen   ≈ sum(text.end - text.start)   (streaming only, excludes tool wait)
+			//   tps   ≈ output / gen_seconds
+			// Wall-clock created→completed is kept as TotalTimeMs only.
 			if cm.Time != nil && cm.Time.Created != nil && cm.Time.Completed != nil && *cm.Time.Completed > *cm.Time.Created {
 				met.TotalTimeMs = float64(*cm.Time.Completed - *cm.Time.Created)
+			}
+			if spans := timings[mr.id]; len(spans) > 0 && cm.Time != nil && cm.Time.Created != nil {
+				first := spans[0].start
+				for _, sp := range spans {
+					if sp.start < first {
+						first = sp.start
+					}
+				}
+				if first > *cm.Time.Created {
+					met.TTFTMs = float64(first - *cm.Time.Created)
+				}
+				var genMs int64
+				for _, sp := range spans {
+					if sp.end > sp.start {
+						genMs += sp.end - sp.start
+					}
+				}
+				if cm.Tokens.Output > 0 && genMs > 0 {
+					met.TokensPerSec = float64(cm.Tokens.Output) / (float64(genMs) / 1000.0)
+				}
 			}
 			m.Metrics = met
 		}
@@ -310,6 +351,42 @@ func (r *mimoReader) fillSession(s *model.Session) error {
 		}
 	}
 	return nil
+}
+
+// partSpan is a streaming text part's start/end in unix milliseconds.
+type partSpan struct{ start, end int64 }
+
+// textPartTimings loads type=text parts that carry time.{start,end} for a session.
+func (r *mimoReader) textPartTimings(sessionID string) (map[string][]partSpan, error) {
+	rows, err := r.db.Query(`
+		SELECT message_id, data FROM part
+		WHERE session_id = ? AND data LIKE '%"time"%start%'`, sessionID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	out := map[string][]partSpan{}
+	for rows.Next() {
+		var mid, raw string
+		if err := rows.Scan(&mid, &raw); err != nil {
+			continue
+		}
+		var p struct {
+			Type string `json:"type"`
+			Time *struct {
+				Start *int64 `json:"start"`
+				End   *int64 `json:"end"`
+			} `json:"time"`
+		}
+		if err := json.Unmarshal([]byte(raw), &p); err != nil || p.Time == nil {
+			continue
+		}
+		if p.Time.Start == nil || p.Time.End == nil {
+			continue
+		}
+		out[mid] = append(out[mid], partSpan{start: *p.Time.Start, end: *p.Time.End})
+	}
+	return out, rows.Err()
 }
 
 func msToTime(ms int64) time.Time {
