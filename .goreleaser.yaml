@@ -54,8 +54,9 @@ changelog:
       - "^chore:"
 
 release:
+  # Publish to the fork/origin this repo actually pushes to.
   github:
-    owner: garywhat
+    owner: 1781415302
     name: devinmonitor
   draft: true
   prerelease: auto
