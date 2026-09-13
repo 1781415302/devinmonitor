@@ -345,329 +345,647 @@ const webDashboardHTML = `<!DOCTYPE html>
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>DevinMonitor · Token 用量</title>
+<title>Token Ledger · Devin / WSL / MiMo</title>
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-<link href="https://fonts.googleapis.com/css2?family=Fira+Code:wght@400;500;600&family=Fira+Sans:wght@300;400;500;600;700&display=swap" rel="stylesheet">
+<link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Sans:wght@300;400;500;600;700&family=JetBrains+Mono:wght@400;500;600&display=swap" rel="stylesheet">
 <style>
+/* Minimalism / Swiss · light · from-scratch (not glassmorphism) */
 :root {
-  --color-background: #0F172A;
-  --color-card: #1B2336;
-  --color-muted: #272F42;
-  --color-border: rgba(148, 163, 184, 0.18);
-  --color-border-strong: rgba(148, 163, 184, 0.28);
-  --color-foreground: #F8FAFC;
-  --color-muted-fg: #94A3B8;
-  --color-accent: #22C55E;
-  --color-accent-soft: rgba(34, 197, 94, 0.14);
-  --color-wsl: #A78BFA;
-  --color-mimo: #2DD4BF;
-  --color-local: #60A5FA;
-  --radius: 14px;
-  --radius-sm: 10px;
-  --shadow: 0 8px 32px rgba(0,0,0,.35);
-  --font-sans: "Fira Sans", "PingFang SC", "Microsoft YaHei", system-ui, sans-serif;
-  --font-mono: "Fira Code", ui-monospace, Consolas, monospace;
-  --blur: 16px;
+  --ink: #111827;
+  --ink-2: #374151;
+  --ink-3: #6B7280;
+  --paper: #F7F6F3;
+  --surface: #FFFFFF;
+  --line: #E5E2DA;
+  --line-strong: #CFC9BC;
+  --accent: #0B6E4F;
+  --accent-soft: #E6F2EC;
+  --warn: #B45309;
+  --danger: #B42318;
+  --src-local: #1D4ED8;
+  --src-wsl: #7C3AED;
+  --src-mimo: #0F766E;
+  --r: 2px;
+  --font: "IBM Plex Sans", "PingFang SC", "Microsoft YaHei", system-ui, sans-serif;
+  --mono: "JetBrains Mono", ui-monospace, Consolas, monospace;
+  --max: 1180px;
 }
 * { box-sizing: border-box; }
 html, body { margin: 0; padding: 0; }
 body {
-  min-height: 100vh;
-  font-family: var(--font-sans);
-  font-size: 15px;
-  line-height: 1.5;
-  color: var(--color-foreground);
-  background:
-    radial-gradient(1200px 600px at 10% -10%, rgba(34,197,94,.12), transparent 55%),
-    radial-gradient(900px 500px at 90% 0%, rgba(96,165,250,.10), transparent 50%),
-    radial-gradient(800px 400px at 50% 100%, rgba(167,139,250,.08), transparent 50%),
-    var(--color-background);
-  background-attachment: fixed;
+  background: var(--paper);
+  color: var(--ink);
+  font-family: var(--font);
+  font-size: 14px;
+  line-height: 1.45;
+  -webkit-font-smoothing: antialiased;
 }
-.shell { max-width: 1280px; margin: 0 auto; padding: 28px 22px 48px; }
-header.top { display: flex; flex-wrap: wrap; align-items: center; gap: 12px 18px; margin-bottom: 22px; }
-.brand { display: flex; align-items: center; gap: 12px; }
-.mark {
-  width: 38px; height: 38px; border-radius: 12px; display: grid; place-items: center;
-  background: linear-gradient(145deg, rgba(34,197,94,.25), rgba(96,165,250,.18));
-  border: 1px solid var(--color-border-strong); backdrop-filter: blur(var(--blur));
+a { color: var(--accent); }
+.wrap { max-width: var(--max); margin: 0 auto; padding: 0 28px 56px; }
+
+/* Top bar — flat, Swiss rule lines */
+.topbar {
+  border-bottom: 1px solid var(--ink);
+  padding: 22px 0 0;
+  margin-bottom: 28px;
 }
-.mark svg { width: 20px; height: 20px; }
-h1 { margin: 0; font-size: 1.25rem; font-weight: 600; letter-spacing: .01em; }
-h1 span { color: var(--color-accent); font-weight: 700; }
-.subtitle { margin: 2px 0 0; color: var(--color-muted-fg); font-size: .8rem; font-weight: 400; }
-.live-pill {
-  display: inline-flex; align-items: center; gap: 8px; padding: 6px 12px; border-radius: 999px;
-  background: rgba(15,23,42,.55); border: 1px solid var(--color-border);
-  backdrop-filter: blur(var(--blur)); font-size: .75rem; color: var(--color-muted-fg); font-family: var(--font-mono);
+.topbar-row {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: flex-end;
+  gap: 16px 28px;
+  padding-bottom: 16px;
 }
-.live-pill i {
-  width: 8px; height: 8px; border-radius: 50%; background: var(--color-accent);
-  box-shadow: 0 0 0 3px var(--color-accent-soft), 0 0 10px var(--color-accent);
-  animation: pulse 1.8s ease infinite;
+.wordmark {
+  font-size: 1.65rem;
+  font-weight: 600;
+  letter-spacing: -0.03em;
+  line-height: 1.1;
+  margin: 0;
 }
-@keyframes pulse { 50% { opacity: .45; } }
-.updated { margin-left: auto; font-size: .75rem; color: var(--color-muted-fg); font-family: var(--font-mono); }
-.kpi-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(148px, 1fr)); gap: 12px; margin-bottom: 18px; }
-.card {
-  background: linear-gradient(160deg, rgba(27,35,54,.92), rgba(27,35,54,.72));
-  border: 1px solid var(--color-border); border-radius: var(--radius);
-  box-shadow: var(--shadow); backdrop-filter: blur(var(--blur)); padding: 14px 16px;
+.wordmark em {
+  font-style: normal;
+  color: var(--accent);
+  font-weight: 700;
 }
-.kpi .label { font-size: .72rem; color: var(--color-muted-fg); text-transform: uppercase; letter-spacing: .06em; margin-bottom: 8px; font-weight: 500; }
-.kpi .value { font-family: var(--font-mono); font-size: 1.35rem; font-weight: 600; font-variant-numeric: tabular-nums; letter-spacing: -.02em; }
-.kpi .value.accent { color: var(--color-accent); }
-.kpi .value.local { color: var(--color-local); }
-.kpi .value.mimo { color: var(--color-mimo); }
-.kpi .value.wsl { color: var(--color-wsl); }
+.tagline {
+  margin: 6px 0 0;
+  color: var(--ink-3);
+  font-size: .85rem;
+  font-weight: 400;
+}
+.meta-col {
+  margin-left: auto;
+  text-align: right;
+  font-family: var(--mono);
+  font-size: .72rem;
+  color: var(--ink-3);
+  line-height: 1.6;
+}
+.meta-col .live {
+  color: var(--accent);
+  font-weight: 600;
+  letter-spacing: .04em;
+}
+.meta-col .live::before {
+  content: "";
+  display: inline-block;
+  width: 6px; height: 6px;
+  border-radius: 50%;
+  background: var(--accent);
+  margin-right: 6px;
+  vertical-align: middle;
+  animation: blink 1.6s step-end infinite;
+}
+@keyframes blink { 50% { opacity: .2; } }
+
+/* Source strip under title */
+.source-strip {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px 10px;
+  padding: 12px 0;
+  border-top: 1px solid var(--line);
+}
+.chip {
+  display: inline-flex;
+  align-items: baseline;
+  gap: 8px;
+  padding: 6px 10px;
+  border: 1px solid var(--line-strong);
+  background: var(--surface);
+  border-radius: var(--r);
+  font-size: .78rem;
+}
+.chip b { font-weight: 600; font-family: var(--mono); font-size: .72rem; }
+.chip .n { color: var(--ink-3); font-family: var(--mono); font-size: .72rem; }
+.chip.local { border-left: 3px solid var(--src-local); }
+.chip.wsl { border-left: 3px solid var(--src-wsl); }
+.chip.mimo { border-left: 3px solid var(--src-mimo); }
+.chip .path {
+  color: var(--ink-3);
+  font-family: var(--mono);
+  font-size: .65rem;
+  max-width: 280px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* Metrics — printed ledger strip, not glass cards */
+.metrics {
+  display: grid;
+  grid-template-columns: repeat(4, 1fr);
+  border: 1px solid var(--ink);
+  background: var(--surface);
+  margin-bottom: 28px;
+}
+.metric {
+  padding: 18px 16px 16px;
+  border-right: 1px solid var(--line);
+  border-bottom: 1px solid var(--line);
+}
+.metrics .metric:nth-child(4n) { border-right: none; }
+.metrics .metric:nth-last-child(-n+4) { border-bottom: none; }
+.metric .k {
+  font-size: .68rem;
+  text-transform: uppercase;
+  letter-spacing: .1em;
+  color: var(--ink-3);
+  font-weight: 500;
+  margin-bottom: 10px;
+}
+.metric .v {
+  font-family: var(--mono);
+  font-size: 1.55rem;
+  font-weight: 500;
+  letter-spacing: -0.04em;
+  line-height: 1;
+}
+.metric .v.accent { color: var(--accent); }
+.metric .v.muted { color: var(--ink-2); }
+
+/* Section titles with hairline */
+.sec {
+  margin: 0 0 14px;
+  display: flex;
+  align-items: center;
+  gap: 12px;
+}
+.sec h2 {
+  margin: 0;
+  font-size: .72rem;
+  font-weight: 600;
+  letter-spacing: .12em;
+  text-transform: uppercase;
+  color: var(--ink);
+  white-space: nowrap;
+}
+.sec::after {
+  content: "";
+  flex: 1;
+  height: 1px;
+  background: var(--line-strong);
+}
+.sec-tools { margin-left: auto; display: flex; gap: 6px; }
+.sec-tools button {
+  font: inherit;
+  font-size: .72rem;
+  padding: 4px 10px;
+  border: 1px solid var(--line-strong);
+  background: var(--surface);
+  color: var(--ink-2);
+  border-radius: var(--r);
+  cursor: pointer;
+  transition: background .15s ease, color .15s ease, border-color .15s ease;
+}
+.sec-tools button:hover { border-color: var(--ink); color: var(--ink); }
+.sec-tools button:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+.sec-tools button.on {
+  background: var(--ink);
+  border-color: var(--ink);
+  color: #fff;
+}
+
+.block { margin-bottom: 32px; }
+
+/* Token composition — horizontal stacked bar + legend (new layout) */
+.stack {
+  border: 1px solid var(--ink);
+  background: var(--surface);
+  padding: 18px 16px;
+}
+.stack-bar {
+  display: flex;
+  height: 28px;
+  border: 1px solid var(--line-strong);
+  overflow: hidden;
+  margin-bottom: 14px;
+}
+.stack-bar span {
+  display: block;
+  height: 100%;
+  transition: width .3s ease;
+}
+.stack-bar .in { background: #111827; }
+.stack-bar .out { background: var(--accent); }
+.stack-bar .cache { background: #C4B5A0; }
+.legend {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 14px 22px;
+  font-size: .8rem;
+}
+.legend i {
+  display: inline-block;
+  width: 10px; height: 10px;
+  margin-right: 6px;
+  vertical-align: -1px;
+  border: 1px solid var(--ink);
+}
+.legend .in i { background: #111827; }
+.legend .out i { background: var(--accent); }
+.legend .cache i { background: #C4B5A0; }
+.legend .val {
+  font-family: var(--mono);
+  color: var(--ink-3);
+  margin-left: 4px;
+}
+
+/* Tables — Swiss data tables */
 .panel {
-  background: linear-gradient(160deg, rgba(27,35,54,.92), rgba(27,35,54,.70));
-  border: 1px solid var(--color-border); border-radius: var(--radius);
-  box-shadow: var(--shadow); backdrop-filter: blur(var(--blur)); padding: 16px 18px 18px; margin-bottom: 16px;
+  border: 1px solid var(--ink);
+  background: var(--surface);
 }
-.panel-head { display: flex; flex-wrap: wrap; align-items: center; gap: 10px; margin-bottom: 14px; }
-.panel-head h2 { margin: 0; font-size: .78rem; font-weight: 600; letter-spacing: .08em; text-transform: uppercase; color: var(--color-accent); }
-.filters { margin-left: auto; display: flex; flex-wrap: wrap; gap: 6px; }
-.filters button {
-  font: inherit; font-size: .72rem; padding: 5px 12px; border-radius: 999px;
-  border: 1px solid var(--color-border); background: rgba(15,23,42,.45);
-  color: var(--color-muted-fg); cursor: pointer;
-  transition: color .15s ease, border-color .15s ease, background .15s ease;
+.panel-scroll { overflow-x: auto; }
+table { width: 100%; border-collapse: collapse; min-width: 720px; }
+thead th {
+  text-align: left;
+  font-size: .68rem;
+  font-weight: 600;
+  letter-spacing: .08em;
+  text-transform: uppercase;
+  color: var(--ink-3);
+  padding: 10px 12px;
+  border-bottom: 1px solid var(--ink);
+  background: var(--paper);
+  white-space: nowrap;
 }
-.filters button:hover { color: var(--color-foreground); border-color: var(--color-border-strong); }
-.filters button:focus-visible { outline: 2px solid var(--color-accent); outline-offset: 2px; }
-.filters button.on { color: var(--color-foreground); border-color: rgba(34,197,94,.55); background: var(--color-accent-soft); }
-.src-list { display: flex; flex-direction: column; gap: 8px; }
-.src-item {
-  display: flex; flex-wrap: wrap; align-items: center; gap: 8px 14px; padding: 10px 12px;
-  border-radius: var(--radius-sm); background: rgba(15,23,42,.4); border: 1px solid var(--color-border); font-size: .82rem;
+tbody td {
+  padding: 10px 12px;
+  border-bottom: 1px solid var(--line);
+  vertical-align: middle;
 }
-.src-item .path { color: var(--color-muted-fg); font-family: var(--font-mono); font-size: .7rem; word-break: break-all; flex: 1 1 180px; min-width: 0; }
-.badge {
-  display: inline-flex; align-items: center; gap: 6px; padding: 2px 10px; border-radius: 999px;
-  font-size: .7rem; font-weight: 600; font-family: var(--font-mono); border: 1px solid transparent;
+tbody tr:last-child td { border-bottom: none; }
+tbody tr:hover { background: #FBFAF7; }
+.num { text-align: right; font-family: var(--mono); font-size: .78rem; font-variant-numeric: tabular-nums; }
+.mono { font-family: var(--mono); font-size: .75rem; }
+.trunc {
+  max-width: 240px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
-.badge.local { background: rgba(96,165,250,.12); color: var(--color-local); border-color: rgba(96,165,250,.25); }
-.badge.wsl { background: rgba(167,139,250,.12); color: var(--color-wsl); border-color: rgba(167,139,250,.25); }
-.badge.mimo { background: rgba(45,212,191,.12); color: var(--color-mimo); border-color: rgba(45,212,191,.25); }
-.bars { display: flex; flex-direction: column; gap: 12px; }
-.bar-row { display: grid; grid-template-columns: 72px 1fr 72px; gap: 12px; align-items: center; font-size: .82rem; }
-.bar-row .name { color: var(--color-muted-fg); }
-.bar-track { height: 10px; border-radius: 999px; background: rgba(15,23,42,.65); border: 1px solid var(--color-border); overflow: hidden; }
-.bar-fill { height: 100%; border-radius: 999px; background: linear-gradient(90deg, #22C55E, #60A5FA); transition: width .35s ease; }
-.bar-fill.out { background: linear-gradient(90deg, #34D399, #2DD4BF); }
-.bar-fill.cache { background: linear-gradient(90deg, #F59E0B, #F87171); }
-.bar-row .val { text-align: right; font-family: var(--font-mono); font-variant-numeric: tabular-nums; }
-.table-wrap { overflow-x: auto; border-radius: var(--radius-sm); }
-table { width: 100%; border-collapse: collapse; font-size: .82rem; min-width: 640px; }
-th, td { text-align: left; padding: 9px 10px; border-bottom: 1px solid var(--color-border); vertical-align: middle; }
-th { color: var(--color-muted-fg); font-weight: 500; font-size: .7rem; text-transform: uppercase; letter-spacing: .05em; position: sticky; top: 0; background: rgba(27,35,54,.95); backdrop-filter: blur(8px); z-index: 1; }
-td { font-variant-numeric: tabular-nums; }
-tbody tr { transition: background .15s ease; }
-tbody tr:hover { background: rgba(34,197,94,.05); }
-tr:last-child td { border-bottom: none; }
-.num { text-align: right; font-family: var(--font-mono); }
-.mono { font-family: var(--font-mono); font-size: .78rem; }
-.title-cell { max-width: 260px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.pct-track { height: 8px; min-width: 88px; background: rgba(15,23,42,.65); border-radius: 999px; overflow: hidden; border: 1px solid var(--color-border); }
-.pct-fill { height: 100%; background: linear-gradient(90deg, #22C55E, #60A5FA); border-radius: 999px; transition: width .35s ease; }
-.empty { color: var(--color-muted-fg); font-size: .85rem; padding: 8px 0; }
-#alerts div { color: #FCA5A5; font-size: .85rem; padding: 6px 0; border-bottom: 1px solid var(--color-border); }
-#alerts div:last-child { border-bottom: none; }
-@media (max-width: 640px) {
-  .shell { padding: 18px 12px 32px; }
-  .updated { margin-left: 0; width: 100%; }
-  .bar-row { grid-template-columns: 56px 1fr 64px; }
+.tag {
+  display: inline-block;
+  font-family: var(--mono);
+  font-size: .68rem;
+  font-weight: 500;
+  padding: 2px 6px;
+  border: 1px solid var(--line-strong);
+  border-radius: var(--r);
+  background: var(--paper);
+}
+.tag.local { color: var(--src-local); border-color: #BFDBFE; background: #EFF6FF; }
+.tag.wsl { color: var(--src-wsl); border-color: #DDD6FE; background: #F5F3FF; }
+.tag.mimo { color: var(--src-mimo); border-color: #99F6E4; background: #F0FDFA; }
+.share {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 100px;
+}
+.share-track {
+  flex: 1;
+  height: 4px;
+  background: var(--line);
+  position: relative;
+}
+.share-fill {
+  position: absolute;
+  left: 0; top: 0; bottom: 0;
+  background: var(--ink);
+}
+.share-fill.is-accent { background: var(--accent); }
+.share-pct {
+  font-family: var(--mono);
+  font-size: .68rem;
+  color: var(--ink-3);
+  width: 36px;
+  text-align: right;
+}
+
+.alerts {
+  border: 1px solid var(--ink);
+  background: var(--surface);
+  padding: 12px 16px;
+}
+.alerts .empty, .empty {
+  color: var(--ink-3);
+  font-size: .85rem;
+}
+.alerts li {
+  color: var(--danger);
+  margin: 0 0 6px;
+  padding: 0;
+  list-style: none;
+  font-size: .85rem;
+}
+.alerts ul { margin: 0; padding: 0; }
+
+footer.foot {
+  margin-top: 8px;
+  padding-top: 14px;
+  border-top: 1px solid var(--line);
+  font-size: .72rem;
+  color: var(--ink-3);
+  font-family: var(--mono);
+}
+
+@media (max-width: 900px) {
+  .metrics { grid-template-columns: repeat(2, 1fr); }
+  .metrics .metric:nth-child(4n) { border-right: 1px solid var(--line); }
+  .metrics .metric:nth-child(2n) { border-right: none; }
+  .metrics .metric:nth-last-child(-n+4) { border-bottom: 1px solid var(--line); }
+  .metrics .metric:nth-last-child(-n+2) { border-bottom: none; }
+  .meta-col { margin-left: 0; text-align: left; width: 100%; }
+}
+@media (max-width: 520px) {
+  .wrap { padding: 0 14px 40px; }
+  .metrics { grid-template-columns: 1fr 1fr; }
+  .wordmark { font-size: 1.3rem; }
 }
 @media (prefers-reduced-motion: reduce) {
-  .live-pill i { animation: none; }
-  .bar-fill, .pct-fill, tbody tr, .filters button { transition: none; }
+  .meta-col .live::before { animation: none; }
+  .stack-bar span { transition: none; }
+  tbody tr { transition: none; }
 }
 </style>
 </head>
 <body>
-<div class="shell">
-  <header class="top">
-    <div class="brand">
-      <div class="mark" aria-hidden="true">
-        <svg viewBox="0 0 24 24" fill="none" stroke="#22C55E" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">
-          <path d="M4 19V5"/><path d="M10 19V9"/><path d="M16 19V7"/><path d="M22 19V3"/>
-        </svg>
-      </div>
+<div class="wrap">
+  <header class="topbar">
+    <div class="topbar-row">
       <div>
-        <h1><span>Devin</span>Monitor</h1>
-        <p class="subtitle">Devin · WSL · MiMo token 用量</p>
+        <h1 class="wordmark">Token <em>Ledger</em></h1>
+        <p class="tagline">Devin · WSL · MiMo  —  用量账本</p>
+      </div>
+      <div class="meta-col">
+        <div class="live" id="liveFlag">LIVE</div>
+        <div id="updated">连接中…</div>
+        <div>SSE · 5s</div>
       </div>
     </div>
-    <div class="live-pill" title="SSE 每 5 秒推送"><i></i> LIVE · 5s</div>
-    <div class="updated" id="updated">连接中…</div>
+    <div class="source-strip" id="sources"><span class="empty">加载数据源…</span></div>
   </header>
-  <div class="kpi-grid" id="kpis" aria-live="polite"></div>
-  <section class="panel">
-    <div class="panel-head"><h2>数据源</h2></div>
-    <div class="src-list" id="sources"><div class="empty">加载中…</div></div>
+
+  <div class="metrics" id="kpis" aria-live="polite"></div>
+
+  <section class="block">
+    <div class="sec"><h2>Token 构成</h2></div>
+    <div class="stack">
+      <div class="stack-bar" id="stackBar" role="img" aria-label="Token 构成比例"></div>
+      <div class="legend" id="stackLegend"></div>
+    </div>
   </section>
-  <section class="panel">
-    <div class="panel-head"><h2>Token 构成</h2></div>
-    <div class="bars" id="tokenBars"></div>
-  </section>
-  <section class="panel">
-    <div class="panel-head"><h2>模型用量</h2></div>
-    <div class="table-wrap">
+
+  <section class="block">
+    <div class="sec"><h2>模型</h2></div>
+    <div class="panel panel-scroll">
       <table id="models">
         <thead><tr>
           <th>模型</th>
-          <th class="num">会话</th><th class="num">请求</th>
-          <th class="num">输入</th><th class="num">输出</th><th class="num">缓存读</th>
-          <th class="num">合计</th><th class="num">速度</th><th class="num">成本</th>
+          <th class="num">会话</th>
+          <th class="num">请求</th>
+          <th class="num">输入</th>
+          <th class="num">输出</th>
+          <th class="num">缓存</th>
+          <th class="num">合计</th>
+          <th class="num">t/s</th>
+          <th class="num">成本</th>
           <th>占比</th>
         </tr></thead>
         <tbody></tbody>
       </table>
     </div>
   </section>
-  <section class="panel">
-    <div class="panel-head">
-      <h2>会话用量</h2>
-      <div class="filters" id="sourceFilter" role="group" aria-label="按来源筛选"></div>
+
+  <section class="block">
+    <div class="sec">
+      <h2>会话</h2>
+      <div class="sec-tools" id="sourceFilter" role="group" aria-label="来源筛选"></div>
     </div>
-    <div class="table-wrap">
+    <div class="panel panel-scroll">
       <table id="sessions">
         <thead><tr>
-          <th>ID</th><th>来源</th><th>标题</th><th>模型</th><th>项目</th>
-          <th class="num">请求</th><th class="num">输入</th><th class="num">输出</th>
-          <th class="num">缓存读</th><th class="num">时长</th><th class="num">成本</th>
+          <th>ID</th>
+          <th>源</th>
+          <th>标题</th>
+          <th>模型</th>
+          <th>项目</th>
+          <th class="num">请求</th>
+          <th class="num">输入</th>
+          <th class="num">输出</th>
+          <th class="num">缓存</th>
+          <th class="num">时长</th>
+          <th class="num">成本</th>
         </tr></thead>
         <tbody></tbody>
       </table>
     </div>
   </section>
-  <section class="panel">
-    <div class="panel-head"><h2>告警</h2></div>
-    <div id="alerts"><div class="empty">无</div></div>
+
+  <section class="block">
+    <div class="sec"><h2>告警</h2></div>
+    <div class="alerts" id="alerts"><span class="empty">无</span></div>
   </section>
+
+  <footer class="foot">devinmonitor web · 只读快照 · 不写回 Devin / MiMo</footer>
 </div>
+
 <script>
 const es = new EventSource('/sse');
-es.onmessage = function(e) {
-  let d; try { d = JSON.parse(e.data); } catch (_) { return; }
-  if (d.error) { document.getElementById('updated').textContent = '错误: ' + d.error; return; }
+es.onmessage = function (e) {
+  let d;
+  try { d = JSON.parse(e.data); } catch (_) { return; }
+  if (d.error) {
+    document.getElementById('updated').textContent = '错误 · ' + d.error;
+    return;
+  }
   render(d);
 };
-es.onerror = function() { document.getElementById('updated').textContent = '连接中断，重试中…'; };
-let activeSource = 'all';
-let lastSessions = [];
+es.onerror = function () {
+  document.getElementById('updated').textContent = '连接中断 · 重试中';
+};
+
+var activeSource = 'all';
+var lastSessions = [];
+
 function fmtTok(n) {
   n = n || 0;
-  if (n >= 1e9) return (n/1e9).toFixed(2) + 'B';
-  if (n >= 1e6) return (n/1e6).toFixed(1) + 'M';
-  if (n >= 1e3) return (n/1e3).toFixed(1) + 'k';
+  if (n >= 1e9) return (n / 1e9).toFixed(2) + 'B';
+  if (n >= 1e6) return (n / 1e6).toFixed(1) + 'M';
+  if (n >= 1e3) return (n / 1e3).toFixed(1) + 'k';
   return String(n);
 }
 function fmtDur(sec) {
   sec = sec || 0;
   if (sec < 60) return Math.round(sec) + 's';
-  if (sec < 3600) return Math.round(sec/60) + 'm';
-  if (sec < 86400) return (sec/3600).toFixed(1) + 'h';
-  return (sec/86400).toFixed(1) + 'd';
+  if (sec < 3600) return Math.round(sec / 60) + 'm';
+  if (sec < 86400) return (sec / 3600).toFixed(1) + 'h';
+  return (sec / 86400).toFixed(1) + 'd';
 }
 function fmtCost(s) {
   if (s.IsFree || s.Cost === 0) return 'free';
   return '$' + (s.Cost || 0).toFixed(2);
 }
 function esc(s) {
-  const d = document.createElement('div');
+  var d = document.createElement('div');
   d.textContent = s == null ? '' : String(s);
   return d.innerHTML;
 }
-function sourceBadge(src) {
-  if (!src || src === 'local') return '<span class="badge local">local</span>';
-  if (src === 'mimo') return '<span class="badge mimo">mimo</span>';
-  const isWsl = src.indexOf('wsl') === 0;
-  return '<span class="badge ' + (isWsl ? 'wsl' : 'local') + '">' + esc(src) + '</span>';
+function srcClass(src) {
+  if (!src || src === 'local') return 'local';
+  if (src === 'mimo') return 'mimo';
+  return 'wsl';
 }
-function renderSourceFilter(sessions) {
-  const box = document.getElementById('sourceFilter');
-  const set = {};
-  sessions.forEach(function(x) { set[x.Source || 'local'] = true; });
-  const keys = Object.keys(set).sort();
-  if (keys.length <= 1) { box.innerHTML = ''; return; }
-  const opts = ['all'].concat(keys);
-  box.innerHTML = opts.map(function(k) {
-    const on = (activeSource === k) ? ' on' : '';
-    const label = k === 'all' ? '全部' : k;
-    return '<button type="button" class="' + on.trim() + '" data-src="' + esc(k) + '" aria-pressed="' + (activeSource===k) + '">' + esc(label) + '</button>';
+function srcLabel(src) {
+  if (!src || src === 'local') return 'local';
+  if (src === 'mimo') return 'mimo';
+  return src;
+}
+
+function renderSources(sources) {
+  var box = document.getElementById('sources');
+  if (!sources || !sources.length) {
+    box.innerHTML = '<span class="empty">无数据源</span>';
+    return;
+  }
+  box.innerHTML = sources.map(function (x) {
+    var c = srcClass(x.label);
+    return '<span class="chip ' + c + '"><b>' + esc(srcLabel(x.label)) + '</b>' +
+      '<span class="n">' + x.sessions + ' 会话</span>' +
+      '<span class="n">v' + x.schema + '</span>' +
+      '<span class="path" title="' + esc(x.path) + '">' + esc(x.path) + '</span></span>';
   }).join('');
-  box.querySelectorAll('button').forEach(function(btn) {
-    btn.onclick = function() {
+}
+
+function renderFilter(sessions) {
+  var box = document.getElementById('sourceFilter');
+  var set = {};
+  sessions.forEach(function (x) { set[x.Source || 'local'] = true; });
+  var keys = Object.keys(set).sort();
+  if (keys.length <= 1) { box.innerHTML = ''; return; }
+  var opts = ['all'].concat(keys);
+  box.innerHTML = opts.map(function (k) {
+    var on = activeSource === k ? ' on' : '';
+    var label = k === 'all' ? '全部' : srcLabel(k);
+    return '<button type="button" class="' + on.trim() + '" data-src="' + esc(k) + '" aria-pressed="' + (activeSource === k) + '">' + esc(label) + '</button>';
+  }).join('');
+  Array.prototype.forEach.call(box.querySelectorAll('button'), function (btn) {
+    btn.onclick = function () {
       activeSource = btn.getAttribute('data-src');
       renderSessions(lastSessions);
-      renderSourceFilter(lastSessions);
+      renderFilter(lastSessions);
     };
   });
 }
+
 function renderSessions(sessions) {
-  const tb = document.querySelector('#sessions tbody');
-  const filtered = sessions.filter(function(x) {
+  var tb = document.querySelector('#sessions tbody');
+  var filtered = sessions.filter(function (x) {
     if (activeSource === 'all') return true;
     return (x.Source || 'local') === activeSource;
   });
-  if (!filtered.length) { tb.innerHTML = '<tr><td colspan="11" class="empty">无会话</td></tr>'; return; }
-  tb.innerHTML = filtered.slice(0, 80).map(function(x) {
-    return '<tr><td class="mono">' + esc(x.ID) + '</td><td>' + sourceBadge(x.Source) + '</td><td class="title-cell" title="' + esc(x.Title) + '">' + esc(x.Title) + '</td><td class="mono">' + esc(x.Model) + '</td><td>' + esc(x.Project) + '</td><td class="num">' + (x.Requests || 0) + '</td><td class="num">' + fmtTok(x.InputTok) + '</td><td class="num">' + fmtTok(x.OutputTok) + '</td><td class="num">' + fmtTok(x.CacheRead) + '</td><td class="num">' + fmtDur(x.Duration / 1e9) + '</td><td class="num">' + fmtCost(x) + '</td></tr>';
+  if (!filtered.length) {
+    tb.innerHTML = '<tr><td colspan="11" class="empty">无会话</td></tr>';
+    return;
+  }
+  tb.innerHTML = filtered.slice(0, 80).map(function (x) {
+    var c = srcClass(x.Source);
+    return '<tr>' +
+      '<td class="mono">' + esc(x.ID) + '</td>' +
+      '<td><span class="tag ' + c + '">' + esc(srcLabel(x.Source)) + '</span></td>' +
+      '<td class="trunc" title="' + esc(x.Title) + '">' + esc(x.Title) + '</td>' +
+      '<td class="mono">' + esc(x.Model) + '</td>' +
+      '<td class="trunc" title="' + esc(x.Project) + '">' + esc(x.Project) + '</td>' +
+      '<td class="num">' + (x.Requests || 0) + '</td>' +
+      '<td class="num">' + fmtTok(x.InputTok) + '</td>' +
+      '<td class="num">' + fmtTok(x.OutputTok) + '</td>' +
+      '<td class="num">' + fmtTok(x.CacheRead) + '</td>' +
+      '<td class="num">' + fmtDur(x.Duration / 1e9) + '</td>' +
+      '<td class="num">' + fmtCost(x) + '</td>' +
+      '</tr>';
   }).join('');
 }
+
 function render(d) {
-  document.getElementById('updated').textContent = '更新于 ' + new Date(d.updated || Date.now()).toLocaleTimeString();
-  const u = d.usage || {};
-  const s = d.summary || {};
-  const nSrc = (d.sources || []).length;
-  const kpis = [
+  document.getElementById('updated').textContent =
+    new Date(d.updated || Date.now()).toLocaleTimeString();
+
+  var u = d.usage || {};
+  var s = d.summary || {};
+  var nSrc = (d.sources || []).length;
+  var kpis = [
     ['会话', s.totalSessions || 0, ''],
     ['请求', u.requests || 0, ''],
-    ['输入 Token', fmtTok(u.inputTokens), 'local'],
-    ['输出 Token', fmtTok(u.outputTokens), 'mimo'],
-    ['缓存读', fmtTok(u.cacheRead), ''],
+    ['输入', fmtTok(u.inputTokens), ''],
+    ['输出', fmtTok(u.outputTokens), ''],
+    ['缓存读', fmtTok(u.cacheRead), 'muted'],
     ['总 Token', fmtTok(u.totalTokens), 'accent'],
     ['成本', s.totalCost > 0 ? '$' + s.totalCost.toFixed(2) : 'free', 'accent'],
-    ['数据源', nSrc, nSrc > 1 ? 'wsl' : '']
+    ['数据源', nSrc, 'muted']
   ];
-  const kg = document.getElementById('kpis');
+  var kg = document.getElementById('kpis');
   kg.innerHTML = '';
-  kpis.forEach(function(item) {
-    const c = document.createElement('div');
-    c.className = 'card kpi';
-    c.innerHTML = '<div class="label">' + item[0] + '</div><div class="value ' + (item[2] || '') + '">' + item[1] + '</div>';
-    kg.appendChild(c);
+  kpis.forEach(function (item) {
+    var el = document.createElement('div');
+    el.className = 'metric';
+    el.innerHTML = '<div class="k">' + item[0] + '</div><div class="v ' + (item[2] || '') + '">' + item[1] + '</div>';
+    kg.appendChild(el);
   });
-  const srcBox = document.getElementById('sources');
-  const sources = d.sources || [];
-  if (!sources.length) srcBox.innerHTML = '<div class="empty">无数据源</div>';
-  else srcBox.innerHTML = sources.map(function(x) {
-    return '<div class="src-item">' + sourceBadge(x.label) + '<strong>' + x.sessions + ' 会话</strong><span class="mono" style="color:var(--color-muted-fg);font-size:.72rem">schema ' + x.schema + '</span><span class="path">' + esc(x.path) + '</span></div>';
-  }).join('');
-  const maxTok = Math.max(u.inputTokens || 0, u.outputTokens || 0, u.cacheRead || 0, 1);
-  document.getElementById('tokenBars').innerHTML = [['输入', u.inputTokens, ''], ['输出', u.outputTokens, 'out'], ['缓存读', u.cacheRead, 'cache']].map(function(b) {
-    const pct = Math.round((b[1] / maxTok) * 100);
-    return '<div class="bar-row"><span class="name">' + b[0] + '</span><div class="bar-track"><div class="bar-fill ' + b[2] + '" style="width:' + pct + '%"></div></div><span class="val">' + fmtTok(b[1]) + '</span></div>';
-  }).join('');
-  const models = d.models || [];
-  const mMax = Math.max.apply(null, models.map(function(m) { return m.totalTokens || 0; }).concat([1]));
-  const mtb = document.querySelector('#models tbody');
-  if (!models.length) mtb.innerHTML = '<tr><td colspan="10" class="empty">无数据</td></tr>';
-  else mtb.innerHTML = models.map(function(m) {
-    const pct = Math.round(((m.totalTokens || 0) / mMax) * 100);
-    const cost = m.isFree || !m.cost ? 'free' : '$' + (m.cost || 0).toFixed(2);
-    const speed = m.tokPerSec > 0 ? Math.round(m.tokPerSec) + ' t/s' : '—';
-    return '<tr><td class="mono">' + esc(m.name) + '</td><td class="num">' + (m.sessions || 0) + '</td><td class="num">' + (m.requests || 0) + '</td><td class="num">' + fmtTok(m.inputTokens) + '</td><td class="num">' + fmtTok(m.outputTokens) + '</td><td class="num">' + fmtTok(m.cacheRead) + '</td><td class="num">' + fmtTok(m.totalTokens) + '</td><td class="num">' + speed + '</td><td class="num">' + cost + '</td><td><div class="pct-track"><div class="pct-fill" style="width:' + pct + '%"></div></div></td></tr>';
-  }).join('');
+
+  renderSources(d.sources || []);
+
+  var inn = u.inputTokens || 0;
+  var out = u.outputTokens || 0;
+  var cache = u.cacheRead || 0;
+  var sum = inn + out + cache || 1;
+  document.getElementById('stackBar').innerHTML =
+    '<span class="in" style="width:' + (inn / sum * 100) + '%"></span>' +
+    '<span class="out" style="width:' + (out / sum * 100) + '%"></span>' +
+    '<span class="cache" style="width:' + (cache / sum * 100) + '%"></span>';
+  document.getElementById('stackLegend').innerHTML =
+    '<span class="in"><i></i>输入<span class="val">' + fmtTok(inn) + '</span></span>' +
+    '<span class="out"><i></i>输出<span class="val">' + fmtTok(out) + '</span></span>' +
+    '<span class="cache"><i></i>缓存读<span class="val">' + fmtTok(cache) + '</span></span>';
+
+  var models = d.models || [];
+  var mMax = Math.max.apply(null, models.map(function (m) { return m.totalTokens || 0; }).concat([1]));
+  var mtb = document.querySelector('#models tbody');
+  if (!models.length) {
+    mtb.innerHTML = '<tr><td colspan="10" class="empty">无数据</td></tr>';
+  } else {
+    mtb.innerHTML = models.map(function (m) {
+      var pct = Math.round(((m.totalTokens || 0) / mMax) * 100);
+      var cost = m.isFree || !m.cost ? 'free' : '$' + (m.cost || 0).toFixed(2);
+      var speed = m.tokPerSec > 0 ? Math.round(m.tokPerSec) : '—';
+      return '<tr>' +
+        '<td class="mono">' + esc(m.name) + '</td>' +
+        '<td class="num">' + (m.sessions || 0) + '</td>' +
+        '<td class="num">' + (m.requests || 0) + '</td>' +
+        '<td class="num">' + fmtTok(m.inputTokens) + '</td>' +
+        '<td class="num">' + fmtTok(m.outputTokens) + '</td>' +
+        '<td class="num">' + fmtTok(m.cacheRead) + '</td>' +
+        '<td class="num">' + fmtTok(m.totalTokens) + '</td>' +
+        '<td class="num">' + speed + '</td>' +
+        '<td class="num">' + cost + '</td>' +
+        '<td><div class="share"><div class="share-track"><div class="share-fill' + (pct > 60 ? ' is-accent' : '') + '" style="width:' + pct + '%"></div></div><span class="share-pct">' + pct + '%</span></div></td>' +
+        '</tr>';
+    }).join('');
+  }
+
   lastSessions = d.sessions || [];
-  renderSourceFilter(lastSessions);
+  renderFilter(lastSessions);
   renderSessions(lastSessions);
-  const al = document.getElementById('alerts');
-  const alerts = d.alerts || [];
-  al.innerHTML = alerts.length ? alerts.map(function(a) { return '<div>[' + esc(a.Severity) + '] ' + esc(a.Message) + '</div>'; }).join('') : '<div class="empty">无</div>';
+
+  var al = document.getElementById('alerts');
+  var alerts = d.alerts || [];
+  if (!alerts.length) al.innerHTML = '<span class="empty">无</span>';
+  else al.innerHTML = '<ul>' + alerts.map(function (a) {
+    return '<li>[' + esc(a.Severity) + '] ' + esc(a.Message) + '</li>';
+  }).join('') + '</ul>';
 }
 </script>
 </body>
