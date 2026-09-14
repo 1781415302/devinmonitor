@@ -28,8 +28,8 @@ type WSLDistro struct {
 	SnapshotDir string
 }
 
-// DetectWSLDistros lists running/installed WSL distros that contain a
-// Devin CLI sessions.db. Best-effort: failures are skipped silently.
+// DetectWSLDistros lists installed WSL distros (excluding docker-desktop).
+// Callers probe each distro for Devin / MiMo / OpenCode stores.
 func DetectWSLDistros(only []string) []string {
 	if os.Getenv("DEVIN_NO_WSL") == "1" {
 		return nil
@@ -56,9 +56,7 @@ func DetectWSLDistros(only []string) []string {
 		if len(want) > 0 && !want[name] {
 			continue
 		}
-		if wslHasDevinDB(name) {
-			out = append(out, name)
-		}
+		out = append(out, name)
 	}
 	return out
 }
