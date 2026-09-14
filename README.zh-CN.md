@@ -178,13 +178,16 @@ DevinMonitor 从 Devin CLI 的数据目录读取 `sessions.db`：
 
 ### Windows + WSL + MiMo 合并
 
-在 Windows 上，默认自动探测并合并：
+**每次启动自动扫描**本机与所有 WSL 发行版中的已支持 AI 数据源：
 
-| 来源 | 路径 | 说明 |
-|------|------|------|
-| `local` | `%APPDATA%\devin\cli\sessions.db` | 本机 Devin |
-| `wsl:<发行版>` | 各 WSL 里的 `~/.local/share/devin/cli/sessions.db` | 经 `wsl.exe` 快照，避免 SQLITE_BUSY |
-| `mimo` | `~/.local/share/mimocode/mimocode.db` | MiMoCode token / 工具用量 |
+| 来源 | 探测路径 |
+|------|----------|
+| `local`（Devin） | 平台默认 `devin/cli/sessions.db` |
+| `mimo`（MiMoCode） | `~/.local/share/mimocode/mimocode.db` |
+| `wsl:<发行版>` | 各 WSL 内 `~/.local/share/devin/cli/sessions.db` |
+| `wsl-mimo:<发行版>` | 各 WSL 内 `~/.local/share/mimocode/mimocode.db` |
+
+有就合并，没有就跳过；可用 `--no-wsl` / `--no-mimo` / `--wsl <名>` 收窄。
 
 ```bash
 devinmonitor sources                 # 查看各源会话数与路径

@@ -2,6 +2,7 @@ package reader
 
 import (
 	"fmt"
+	"path/filepath"
 	"sort"
 	"strings"
 
@@ -29,10 +30,90 @@ type MultiReader struct {
 
 // wslTrack remembers how to re-snapshot a WSL source for live refresh.
 type wslTrack struct {
-	label      string // "wsl:Ubuntu-18.04"
+	label      string // "wsl:Ubuntu-18.04" or "wsl-mimo:Ubuntu-18.04"
 	distro     string // "Ubuntu-18.04"
 	snapDir    string // current Windows-side snapshot dir
-	mtime, size int64 // fingerprint of in-distro sessions.db when last snapshotted
+	mtime      int64
+	size       int64
+	isMiMo     bool
+}
+
+// trackWSLFP records a WSL Devin source with a known upstream fingerprint.
+func (m *MultiReader) trackWSLFP(label, distro, snapDir string, mt, sz int64) {
+	m.wsl = append(m.wsl, wslTrack{
+		label: label, distro: distro, snapDir: snapDir, mtime: mt, size: sz,
+	})
+}
+
+// trackWSLMiMoFP records a WSL MiMo source fingerprint.
+func (m *MultiReader) trackWSLMiMoFP(label, distro, snapDir string, mt, sz int64) {
+	m.wsl = append(m.wsl, wslTrack{
+		label: label, distro: distro, snapDir: snapDir, mtime: mt, size: sz, isMiMo: true,
+	})
+}
+
+// Refresh re-snapshots WSL sources when the in-distro db changed.
+func (m *MultiReader) Refresh() error {
+	if len(m.wsl) == 0 {
+		return nil
+	}
+	for i := range m.wsl {
+		t := &m.wsl[i]
+		var mt, sz int64
+		var ok bool
+		if t.isMiMo {
+			mt, sz, ok = WSLMiMoStat(t.distro)
+		} else {
+			mt, sz, ok = WSLDBStat(t.distro)
+		}
+		if !ok {
+			continue
+		}
+		if mt == t.mtime && sz == t.size {
+			continue
+		}
+		var newDir string
+		var err error
+		var r Reader
+		if t.isMiMo {
+			newDir, err = SnapshotWSLMiMo(t.distro)
+			if err != nil {
+				return fmt.Errorf("refresh wsl-mimo %s: %w", t.distro, err)
+			}
+			r, err = newMiMoReader(filepath.Join(newDir, "mimocode.db"))
+		} else {
+			newDir, err = SnapshotWSLDB(t.distro)
+			if err != nil {
+				return fmt.Errorf("refresh wsl %s: %w", t.distro, err)
+			}
+			r, err = openOne(newDir)
+		}
+		if err != nil {
+			cleanupDir(newDir)
+			return fmt.Errorf("refresh %s open: %w", t.label, err)
+		}
+		swapped := false
+		for j := range m.sources {
+			if m.sources[j].Label == t.label {
+				_ = m.sources[j].Reader.Close()
+				m.sources[j].Reader = r
+				swapped = true
+				break
+			}
+		}
+		if !swapped {
+			_ = r.Close()
+			cleanupDir(newDir)
+			return fmt.Errorf("refresh %s: source disappeared", t.label)
+		}
+		oldDir := t.snapDir
+		t.snapDir = newDir
+		t.mtime, t.size = mt, sz
+		m.removeCleanup(oldDir)
+		cleanupDir(oldDir)
+		m.AddCleanup(newDir)
+	}
+	return nil
 }
 
 // NewMulti builds a MultiReader from one or more opened sources.
@@ -49,74 +130,6 @@ func (m *MultiReader) AddCleanup(dir string) {
 	if dir != "" {
 		m.cleanup = append(m.cleanup, dir)
 	}
-}
-
-// trackWSL records a WSL snapshot source so Refresh can re-copy it.
-func (m *MultiReader) trackWSL(label, distro, snapDir string) {
-	mt, sz, _ := WSLDBStat(distro)
-	m.trackWSLFP(label, distro, snapDir, mt, sz)
-}
-
-// trackWSLFP records a WSL source with a known upstream fingerprint.
-func (m *MultiReader) trackWSLFP(label, distro, snapDir string, mt, sz int64) {
-	m.wsl = append(m.wsl, wslTrack{
-		label:   label,
-		distro:  distro,
-		snapDir: snapDir,
-		mtime:   mt,
-		size:    sz,
-	})
-}
-
-// Refresh re-snapshots WSL sources when the in-distro sessions.db changed.
-// Local WAL sources are already live via the open connection.
-func (m *MultiReader) Refresh() error {
-	if len(m.wsl) == 0 {
-		return nil
-	}
-	for i := range m.wsl {
-		t := &m.wsl[i]
-		mt, sz, ok := WSLDBStat(t.distro)
-		if !ok {
-			continue
-		}
-		// Unchanged since last snapshot.
-		if mt == t.mtime && sz == t.size {
-			continue
-		}
-		newDir, err := SnapshotWSLDB(t.distro)
-		if err != nil {
-			return fmt.Errorf("refresh wsl %s: %w", t.distro, err)
-		}
-		r, err := openOne(newDir)
-		if err != nil {
-			cleanupDir(newDir)
-			return fmt.Errorf("refresh wsl %s open: %w", t.distro, err)
-		}
-		// Swap reader in place.
-		swapped := false
-		for j := range m.sources {
-			if m.sources[j].Label == t.label {
-				_ = m.sources[j].Reader.Close()
-				m.sources[j].Reader = r
-				swapped = true
-				break
-			}
-		}
-		if !swapped {
-			_ = r.Close()
-			cleanupDir(newDir)
-			return fmt.Errorf("refresh wsl %s: source %q disappeared", t.distro, t.label)
-		}
-		oldDir := t.snapDir
-		t.snapDir = newDir
-		t.mtime, t.size = mt, sz
-		// Drop old snapshot dir from cleanup list and remove it.
-		m.removeCleanup(oldDir)
-		cleanupDir(oldDir)
-		m.AddCleanup(newDir)
-	}
-	return nil
 }
 
 func (m *MultiReader) removeCleanup(dir string) {

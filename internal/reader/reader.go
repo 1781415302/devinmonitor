@@ -97,72 +97,115 @@ func Open(dataDir string) (Reader, error) {
 }
 
 // OpenWith opens one or more sources according to opts.
+// When DataDir is empty it auto-discovers supported AI stores on the
+// local host and (Windows) every WSL distro: Devin + MiMoCode.
 func OpenWith(opts OpenOptions) (Reader, error) {
-	local, err := openOne(opts.DataDir)
-	if err != nil {
-		return nil, err
-	}
-	// Explicit --data-dir: single source only.
+	// Explicit --data-dir: single forced source, no discovery.
 	if opts.DataDir != "" {
-		return local, nil
+		return openOne(opts.DataDir)
 	}
 
-	// Collect secondary sources (WSL snapshots + MiMo).
-	needMulti := false
-	var wslDistros []string
-	if opts.IncludeWSL && os.Getenv("DEVIN_NO_WSL") != "1" {
-		wslDistros = DetectWSLDistros(opts.WSLDistros)
-		if len(wslDistros) > 0 {
-			needMulti = true
-		}
-	}
-	mimoPath := ""
-	if opts.IncludeMiMo && os.Getenv("DEVIN_NO_MIMO") != "1" {
-		mimoPath = ResolveMiMoDBPath("")
-		if mimoPath != "" {
-			needMulti = true
-		}
-	}
-	if !needMulti {
-		return local, nil
+	found := DiscoverSources(opts.WSLDistros, opts.IncludeWSL, opts.IncludeMiMo)
+	if len(found) == 0 {
+		return openOne("")
 	}
 
-	sources := []SourceRef{{Label: "local", Reader: local}}
+	// Open local sources first, then snapshot WSL.
+	var sources []SourceRef
+	var cleanups []string
+	type wslTrackInit struct {
+		label, distro, snapDir string
+		mt, sz                 int64
+		isMiMo                 bool
+	}
+	var tracks []wslTrackInit
+
+	for _, ds := range found {
+		if ds.Distro == "" {
+			// Local host file.
+			var r Reader
+			var err error
+			if ds.Kind == KindMiMo {
+				r, err = newMiMoReader(ds.Path)
+			} else {
+				r, err = openOneFile(ds.Path)
+			}
+			if err != nil {
+				fmt.Fprintf(os.Stderr, "devinmonitor: skip %s: %v\n", ds.Label, err)
+				continue
+			}
+			sources = append(sources, SourceRef{Label: ds.Label, Reader: r})
+			continue
+		}
+
+		// WSL source — snapshot then open.
+		if ds.Kind == KindDevin {
+			mt, sz, _ := WSLDBStat(ds.Distro)
+			snapDir, err := SnapshotWSLDB(ds.Distro)
+			if err != nil {
+				fmt.Fprintf(os.Stderr, "devinmonitor: skip %s: %v\n", ds.Label, err)
+				continue
+			}
+			r, err := openOne(snapDir)
+			if err != nil {
+				cleanupDir(snapDir)
+				fmt.Fprintf(os.Stderr, "devinmonitor: skip %s: %v\n", ds.Label, err)
+				continue
+			}
+			sources = append(sources, SourceRef{Label: ds.Label, Reader: r})
+			cleanups = append(cleanups, snapDir)
+			tracks = append(tracks, wslTrackInit{ds.Label, ds.Distro, snapDir, mt, sz, false})
+			continue
+		}
+		if ds.Kind == KindMiMo {
+			mt, sz, _ := WSLMiMoStat(ds.Distro)
+			snapDir, err := SnapshotWSLMiMo(ds.Distro)
+			if err != nil {
+				fmt.Fprintf(os.Stderr, "devinmonitor: skip %s: %v\n", ds.Label, err)
+				continue
+			}
+			r, err := newMiMoReader(filepath.Join(snapDir, "mimocode.db"))
+			if err != nil {
+				cleanupDir(snapDir)
+				fmt.Fprintf(os.Stderr, "devinmonitor: skip %s: %v\n", ds.Label, err)
+				continue
+			}
+			sources = append(sources, SourceRef{Label: ds.Label, Reader: r})
+			cleanups = append(cleanups, snapDir)
+			tracks = append(tracks, wslTrackInit{ds.Label, ds.Distro, snapDir, mt, sz, true})
+		}
+	}
+
+	if len(sources) == 0 {
+		return openOne("")
+	}
+	if len(sources) == 1 {
+		return sources[0].Reader, nil
+	}
 	m := NewMulti(sources...)
-
-	for _, d := range wslDistros {
-		// Fingerprint before copy so Refresh can detect later writes.
-		mt, sz, _ := WSLDBStat(d)
-		snapDir, err := SnapshotWSLDB(d)
-		if err != nil {
-			fmt.Fprintf(os.Stderr, "devinmonitor: skip wsl %s: %v\n", d, err)
-			continue
-		}
-		r, err := openOne(snapDir)
-		if err != nil {
-			cleanupDir(snapDir)
-			fmt.Fprintf(os.Stderr, "devinmonitor: skip wsl %s: %v\n", d, err)
-			continue
-		}
-		label := "wsl:" + d
-		m.sources = append(m.sources, SourceRef{Label: label, Reader: r})
-		m.AddCleanup(snapDir)
-		m.trackWSLFP(label, d, snapDir, mt, sz)
+	for _, d := range cleanups {
+		m.AddCleanup(d)
 	}
-
-	if mimoPath != "" {
-		mr, err := newMiMoReader(mimoPath)
-		if err != nil {
-			fmt.Fprintf(os.Stderr, "devinmonitor: skip mimo: %v\n", err)
+	for _, t := range tracks {
+		if t.isMiMo {
+			m.trackWSLMiMoFP(t.label, t.distro, t.snapDir, t.mt, t.sz)
 		} else {
-			m.sources = append(m.sources, SourceRef{Label: "mimo", Reader: mr})
+			m.trackWSLFP(t.label, t.distro, t.snapDir, t.mt, t.sz)
 		}
-	}
-
-	if len(m.sources) == 1 {
-		return local, nil
 	}
 	return m, nil
+}
+
+// openOneFile opens a reader when only the sessions.db full path is known.
+func openOneFile(dbPath string) (Reader, error) {
+	ver, err := DetectSchemaVersion(dbPath)
+	if err != nil {
+		return nil, fmt.Errorf("detect schema: %w", err)
+	}
+	if ver > MaxSupportedSchema {
+		return nil, &ErrSchemaUnsupported{Ver: ver, Max: MaxSupportedSchema}
+	}
+	return newV1Reader(dbPath, ver)
 }
 
 // openOne resolves and opens a single local/snapshot database.

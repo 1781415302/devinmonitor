@@ -15,6 +15,9 @@ import (
 // wslDevinDB is the in-distro path of Devin CLI's session store.
 const wslDevinDB = ".local/share/devin/cli/sessions.db"
 
+// wslMiMoDB is the in-distro path of MiMoCode's session store.
+const wslMiMoDB = ".local/share/mimocode/mimocode.db"
+
 // WSLDistro describes a WSL distro that has a Devin sessions.db.
 type WSLDistro struct {
 	Name string // e.g. Ubuntu-18.04
@@ -102,24 +105,52 @@ func decodeUTF16LE(b []byte) string {
 }
 
 func wslHasDevinDB(distro string) bool {
-	script := fmt.Sprintf("test -f \"$HOME/%s\" && echo YES", wslDevinDB)
-	out, err := exec.Command("wsl.exe", "-d", distro, "bash", "-c", script).Output()
-	if err != nil {
-		return false
-	}
-	return strings.Contains(string(out), "YES")
+	return ProbeWSLServices(distro).Devin
 }
 
-// WSLDBStat returns mtime (unix sec) and size of the in-distro sessions.db.
-// Used to skip re-snapshot when nothing changed (live refresh).
-func WSLDBStat(distro string) (mtime, size int64, ok bool) {
-	// Script file avoids wsl.exe eating `$` in inline bash -c args.
+// ProbeWSLServices reports which supported AI stores exist in the distro.
+// One bash call per distro (script file avoids $ mangling).
+func ProbeWSLServices(distro string) ProbeWSLHits {
+	var hits ProbeWSLHits
+	if _, err := exec.LookPath("wsl.exe"); err != nil {
+		return hits
+	}
+	tmp, err := os.MkdirTemp("", "devinmonitor-probe-")
+	if err != nil {
+		return hits
+	}
+	defer os.RemoveAll(tmp)
+	script := fmt.Sprintf(`#!/bin/bash
+[ -f "$HOME/%s" ] && echo DEVIN
+[ -f "$HOME/%s" ] && echo MIMO
+exit 0
+`, wslDevinDB, wslMiMoDB)
+	sp := filepath.Join(tmp, "probe.sh")
+	if err := os.WriteFile(sp, []byte(script), 0o755); err != nil {
+		return hits
+	}
+	wslSp, err := winToWSLPath(sp)
+	if err != nil {
+		return hits
+	}
+	out, err := exec.Command("wsl.exe", "-d", distro, "bash", wslSp).Output()
+	if err != nil {
+		return hits
+	}
+	s := string(out)
+	hits.Devin = strings.Contains(s, "DEVIN")
+	hits.MiMo = strings.Contains(s, "MIMO")
+	return hits
+}
+
+// WSLStatFile returns mtime/size of an in-distro file (relative to $HOME).
+func WSLStatFile(distro, relHome string) (mtime, size int64, ok bool) {
 	tmp, err := os.MkdirTemp("", "devinmonitor-stat-")
 	if err != nil {
 		return 0, 0, false
 	}
 	defer os.RemoveAll(tmp)
-	script := fmt.Sprintf("#!/bin/bash\nstat -c '%%Y %%s' \"$HOME/%s\"\n", wslDevinDB)
+	script := fmt.Sprintf("#!/bin/bash\nstat -c '%%Y %%s' \"$HOME/%s\"\n", relHome)
 	sp := filepath.Join(tmp, "stat.sh")
 	if err := os.WriteFile(sp, []byte(script), 0o755); err != nil {
 		return 0, 0, false
@@ -137,6 +168,16 @@ func WSLDBStat(distro string) (mtime, size int64, ok bool) {
 		return 0, 0, false
 	}
 	return mt, sz, true
+}
+
+// WSLDBStat returns mtime (unix sec) and size of the in-distro sessions.db.
+func WSLDBStat(distro string) (mtime, size int64, ok bool) {
+	return WSLStatFile(distro, wslDevinDB)
+}
+
+// WSLMiMoStat fingerprint for live refresh of WSL MiMo stores.
+func WSLMiMoStat(distro string) (mtime, size int64, ok bool) {
+	return WSLStatFile(distro, wslMiMoDB)
 }
 
 // SnapshotWSLDB copies sessions.db (+ -wal/-shm) from the distro into a
@@ -192,6 +233,57 @@ echo OK
 		return "", fmt.Errorf("wsl snapshot %s: sessions.db missing after copy", distro)
 	}
 	// Drop the helper script so the dir only holds db files.
+	_ = os.Remove(scriptPath)
+	return winDir, nil
+}
+
+// SnapshotWSLMiMo copies mimocode.db (+ -wal/-shm) from the distro.
+func SnapshotWSLMiMo(distro string) (string, error) {
+	winDir, err := os.MkdirTemp("", "devinmonitor-wslmimo-"+sanitizeFile(distro)+"-")
+	if err != nil {
+		return "", err
+	}
+	wslDir, err := winToWSLPath(winDir)
+	if err != nil {
+		os.RemoveAll(winDir)
+		return "", err
+	}
+	script := fmt.Sprintf(`#!/bin/bash
+set -e
+src="$HOME/%s"
+dir='%s'
+mkdir -p "$dir"
+cp -f "$src" "$dir/mimocode.db"
+if [ -f "$src-wal" ]; then cp -f "$src-wal" "$dir/mimocode.db-wal"; fi
+if [ -f "$src-shm" ]; then cp -f "$src-shm" "$dir/mimocode.db-shm"; fi
+echo OK
+`, wslMiMoDB, wslDir)
+	scriptPath := filepath.Join(winDir, "snap.sh")
+	if err := os.WriteFile(scriptPath, []byte(script), 0o755); err != nil {
+		os.RemoveAll(winDir)
+		return "", err
+	}
+	wslScript, err := winToWSLPath(scriptPath)
+	if err != nil {
+		os.RemoveAll(winDir)
+		return "", err
+	}
+	cmd := exec.Command("wsl.exe", "-d", distro, "bash", wslScript)
+	var stderr bytes.Buffer
+	cmd.Stderr = &stderr
+	out, err := cmd.Output()
+	if err != nil {
+		os.RemoveAll(winDir)
+		return "", fmt.Errorf("wsl mimo snapshot %s: %v (%s)", distro, err, strings.TrimSpace(stderr.String()))
+	}
+	if !strings.Contains(string(out), "OK") {
+		os.RemoveAll(winDir)
+		return "", fmt.Errorf("wsl mimo snapshot %s: unexpected output %q", distro, out)
+	}
+	if _, err := os.Stat(filepath.Join(winDir, "mimocode.db")); err != nil {
+		os.RemoveAll(winDir)
+		return "", fmt.Errorf("wsl mimo snapshot %s: mimocode.db missing", distro)
+	}
 	_ = os.Remove(scriptPath)
 	return winDir, nil
 }
