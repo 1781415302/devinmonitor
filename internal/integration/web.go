@@ -941,34 +941,28 @@ function matchesFilters(x) {
 function renderFilters(sessions) {
   var providers = {};
   var instances = {};
-  sessions.forEach(function (x) {
-    var src = instanceOf(x.Source);
-    providers[providerOf(src)] = true;
-    if (activeProvider === 'all' || providerOf(src) === activeProvider) {
-      instances[src] = true;
-    }
-  });
+  for (var i = 0; i < sessions.length; i++) {
+    var src = instanceOf(sessions[i].Source);
+    var p = providerOf(src);
+    providers[p] = true;
+    if (activeProvider === 'all' || p === activeProvider) instances[src] = true;
+  }
 
   var pbox = document.getElementById('providerFilter');
   var pkeys = ['devin', 'mimo', 'opencode'].filter(function (k) { return providers[k]; });
   var popts = ['all'].concat(pkeys);
-  pbox.innerHTML = popts.map(function (k) {
+  var phtml = '';
+  for (var pi = 0; pi < popts.length; pi++) {
+    var k = popts[pi];
     var on = activeProvider === k ? ' on' : '';
     var label = k === 'all' ? '全部' : providerLabel(k);
-    return '<button type="button" class="' + on.trim() + '" data-p="' + esc(k) + '" aria-pressed="' + (activeProvider === k) + '">' + esc(label) + '</button>';
-  }).join('');
-  Array.prototype.forEach.call(pbox.querySelectorAll('button'), function (btn) {
-    btn.onclick = function () {
-      activeProvider = btn.getAttribute('data-p');
-      activeSource = 'all';
-      renderFilters(lastSessions);
-      renderSessions(lastSessions);
-    };
-  });
+    phtml += '<button type="button" class="' + on.trim() + '" data-p="' + esc(k) + '" aria-pressed="' + (activeProvider === k) + '">' + esc(label) + '</button>';
+  }
+  pbox.innerHTML = phtml;
 
   var sbox = document.getElementById('sourceFilter');
-  var skeys = Object.keys(instances).sort();
-  // Friendly order: local mimo opencode then wsl:*
+  var skeys = [];
+  for (var sk in instances) skeys.push(sk);
   skeys.sort(function (a, b) {
     var rank = function (s) {
       if (s === 'local') return 0;
@@ -976,60 +970,98 @@ function renderFilters(sessions) {
       if (s === 'opencode') return 2;
       return 10;
     };
-    return rank(a) - rank(b) || a.localeCompare(b);
+    return rank(a) - rank(b) || (a < b ? -1 : 1);
   });
   var sopts = ['all'].concat(skeys);
-  sbox.innerHTML = sopts.map(function (k) {
-    var on = activeSource === k ? ' on' : '';
-    var label = k === 'all' ? '全部' : instanceLabel(k);
-    // count for this instance under current provider
-    var n = sessions.filter(function (x) {
-      return instanceOf(x.Source) === k &&
-        (activeProvider === 'all' || providerOf(instanceOf(x.Source)) === activeProvider);
-    }).length;
-    if (k !== 'all') label = label + ' (' + n + ')';
-    return '<button type="button" class="' + on.trim() + '" data-s="' + esc(k) + '" aria-pressed="' + (activeSource === k) + '">' + esc(label) + '</button>';
-  }).join('');
-  Array.prototype.forEach.call(sbox.querySelectorAll('button'), function (btn) {
-    btn.onclick = function () {
-      activeSource = btn.getAttribute('data-s');
-      renderFilters(lastSessions);
-      renderSessions(lastSessions);
-    };
-  });
+  var counts = {};
+  for (var ci = 0; ci < sessions.length; ci++) {
+    var s2 = instanceOf(sessions[ci].Source);
+    if (activeProvider === 'all' || providerOf(s2) === activeProvider) {
+      counts[s2] = (counts[s2] || 0) + 1;
+    }
+  }
+  var shtml = '';
+  for (var si = 0; si < sopts.length; si++) {
+    var sk2 = sopts[si];
+    var on2 = activeSource === sk2 ? ' on' : '';
+    var label2 = sk2 === 'all' ? '全部' : (instanceLabel(sk2) + ' (' + (counts[sk2] || 0) + ')');
+    shtml += '<button type="button" class="' + on2.trim() + '" data-s="' + esc(sk2) + '" aria-pressed="' + (activeSource === sk2) + '">' + esc(label2) + '</button>';
+  }
+  sbox.innerHTML = shtml;
 
-  var n = sessions.filter(matchesFilters).length;
+  var n = 0;
+  for (var fi = 0; fi < sessions.length; fi++) {
+    if (matchesFilters(sessions[fi])) n++;
+  }
   document.getElementById('filterCount').textContent =
     '显示 ' + n + ' / ' + sessions.length + ' 个会话';
 }
+
+// Event delegation — one handler, no rebinding on every render.
+(function bindFilterClicks() {
+  function onClick(e) {
+    var btn = e.target.closest ? e.target.closest('button') : null;
+    if (!btn) return;
+    var p = btn.getAttribute('data-p');
+    var s = btn.getAttribute('data-s');
+    if (p != null) {
+      activeProvider = p;
+      activeSource = 'all';
+    } else if (s != null) {
+      activeSource = s;
+    } else {
+      return;
+    }
+    renderFilters(lastSessions);
+    scheduleRenderAll();
+  }
+  var pbox = document.getElementById('providerFilter');
+  var sbox = document.getElementById('sourceFilter');
+  if (pbox) pbox.addEventListener('click', onClick);
+  if (sbox) sbox.addEventListener('click', onClick);
+})();
 
 function render(d) {
   lastData = d;
   document.getElementById('updated').textContent =
     new Date(d.updated || Date.now()).toLocaleTimeString();
   lastSessions = d.sessions || [];
+  renderSources(d.sources || []);
   renderFilters(lastSessions);
-  renderAll();
+  scheduleRenderAll();
+}
+
+var renderPending = false;
+function scheduleRenderAll() {
+  if (renderPending) return;
+  renderPending = true;
+  requestAnimationFrame(function () {
+    renderPending = false;
+    renderAll();
+  });
 }
 
 function renderAll() {
   if (!lastData) return;
   var d = lastData;
   var list = lastSessions.filter(matchesFilters);
+  var unfiltered = (activeProvider === 'all' && activeSource === 'all');
 
   // KPIs from filtered sessions
   var req = 0, inn = 0, out = 0, cache = 0, cost = 0;
-  list.forEach(function (s) {
+  for (var i = 0; i < list.length; i++) {
+    var s = list[i];
     req += s.Requests || 0;
     inn += s.InputTok || 0;
     out += s.OutputTok || 0;
     cache += s.CacheRead || 0;
     if (!s.IsFree) cost += s.Cost || 0;
-  });
+  }
   var totalTok = inn + out + cache;
   var nSrc = {};
-  list.forEach(function (s) { nSrc[instanceOf(s.Source)] = true; });
-  var nSrcCount = Object.keys(nSrc).length;
+  for (var j = 0; j < list.length; j++) nSrc[instanceOf(list[j].Source)] = true;
+  var nSrcCount = 0;
+  for (var k in nSrc) nSrcCount++;
   var kpis = [
     ['会话', list.length, ''],
     ['请求', req, ''],
@@ -1042,14 +1074,13 @@ function renderAll() {
   ];
   var kg = document.getElementById('kpis');
   kg.innerHTML = '';
-  kpis.forEach(function (item) {
+  for (var ki = 0; ki < kpis.length; ki++) {
+    var item = kpis[ki];
     var el = document.createElement('div');
     el.className = 'metric';
     el.innerHTML = '<div class="k">' + item[0] + '</div><div class="v ' + (item[2] || '') + '">' + item[1] + '</div>';
     kg.appendChild(el);
-  });
-
-  renderSources(d.sources || []);
+  }
 
   // Token stack from filtered sessions
   var sum = inn + out + cache || 1;
@@ -1062,11 +1093,56 @@ function renderAll() {
     '<span class="out"><i></i>输出<span class="val">' + fmtTok(out) + '</span></span>' +
     '<span class="cache"><i></i>缓存读<span class="val">' + fmtTok(cache) + '</span></span>';
 
-  // Models re-aggregated from filtered sessions (keep API t/s when name matches)
+  renderModels(list, d.models || [], unfiltered);
+  renderSessions(list);
+  renderAlerts(list);
+}
+
+// Match session model "muse-spark-1.3" to API "opencode/muse-spark-1.3".
+function matchApiModel(name, apiModels) {
+  if (!name) return null;
+  if (apiModels[name]) return apiModels[name];
+  var keys = Object.keys(apiModels);
+  for (var i = 0; i < keys.length; i++) {
+    var k = keys[i];
+    if (k === name) return apiModels[k];
+    var slash = k.lastIndexOf('/');
+    if (slash >= 0 && k.slice(slash + 1) === name) return apiModels[k];
+  }
+  return null;
+}
+
+function renderModels(list, apiList, unfiltered) {
+  var mtb = document.querySelector('#models tbody');
+  // Unfiltered: use server-side aggregation (names include provider prefix, full t/s).
+  if (unfiltered && apiList.length) {
+    var mMax0 = 1;
+    for (var i = 0; i < apiList.length; i++) {
+      if ((apiList[i].totalTokens || 0) > mMax0) mMax0 = apiList[i].totalTokens || 0;
+    }
+    mtb.innerHTML = apiList.map(function (m) {
+      var pct = Math.round(((m.totalTokens || 0) / mMax0) * 100);
+      var costStr = m.isFree || !m.cost ? 'free' : '$' + (m.cost || 0).toFixed(2);
+      var speed = m.tokPerSec > 0 ? Math.round(m.tokPerSec) : '—';
+      return '<tr><td class="mono">' + esc(m.name) + '</td>' +
+        '<td class="num">' + (m.sessions || 0) + '</td>' +
+        '<td class="num">' + (m.requests || 0) + '</td>' +
+        '<td class="num">' + fmtTok(m.inputTokens) + '</td>' +
+        '<td class="num">' + fmtTok(m.outputTokens) + '</td>' +
+        '<td class="num">' + fmtTok(m.cacheRead) + '</td>' +
+        '<td class="num">' + fmtTok(m.totalTokens) + '</td>' +
+        '<td class="num">' + speed + '</td>' +
+        '<td class="num">' + costStr + '</td>' +
+        '<td><div class="share"><div class="share-track"><div class="share-fill' + (pct > 60 ? ' is-accent' : '') + '" style="width:' + pct + '%"></div></div><span class="share-pct">' + pct + '%</span></div></td></tr>';
+    }).join('');
+    return;
+  }
+
   var apiModels = {};
-  (d.models || []).forEach(function (m) { apiModels[m.name] = m; });
+  for (var ai = 0; ai < apiList.length; ai++) apiModels[apiList[ai].name] = apiList[ai];
   var agg = {};
-  list.forEach(function (s) {
+  for (var si = 0; si < list.length; si++) {
+    var s = list[si];
     var name = s.Model || 'unknown';
     var a = agg[name];
     if (!a) {
@@ -1075,6 +1151,11 @@ function renderAll() {
         inputTokens: 0, outputTokens: 0, cacheRead: 0, totalTokens: 0,
         cost: 0, isFree: true, tokPerSec: 0
       };
+      var hit = matchApiModel(name, apiModels);
+      if (hit) {
+        a.tokPerSec = hit.tokPerSec || 0;
+        if (hit.name) a.name = hit.name; // show provider-prefixed name
+      }
     }
     a.sessions++;
     a.requests += s.Requests || 0;
@@ -1086,36 +1167,33 @@ function renderAll() {
       a.cost += s.Cost;
       a.isFree = false;
     }
-    if (apiModels[name]) a.tokPerSec = apiModels[name].tokPerSec || 0;
-  });
-  var models = Object.keys(agg).map(function (k) { return agg[k]; })
-    .sort(function (a, b) { return b.totalTokens - a.totalTokens; });
-  var mMax = Math.max.apply(null, models.map(function (m) { return m.totalTokens || 0; }).concat([1]));
-  var mtb = document.querySelector('#models tbody');
+  }
+  var models = [];
+  for (var mk in agg) models.push(agg[mk]);
+  models.sort(function (x, y) { return y.totalTokens - x.totalTokens; });
   if (!models.length) {
     mtb.innerHTML = '<tr><td colspan="10" class="empty">无数据</td></tr>';
-  } else {
-    mtb.innerHTML = models.map(function (m) {
-      var pct = Math.round(((m.totalTokens || 0) / mMax) * 100);
-      var costStr = m.isFree || !m.cost ? 'free' : '$' + (m.cost || 0).toFixed(2);
-      var speed = m.tokPerSec > 0 ? Math.round(m.tokPerSec) : '—';
-      return '<tr>' +
-        '<td class="mono">' + esc(m.name) + '</td>' +
-        '<td class="num">' + (m.sessions || 0) + '</td>' +
-        '<td class="num">' + (m.requests || 0) + '</td>' +
-        '<td class="num">' + fmtTok(m.inputTokens) + '</td>' +
-        '<td class="num">' + fmtTok(m.outputTokens) + '</td>' +
-        '<td class="num">' + fmtTok(m.cacheRead) + '</td>' +
-        '<td class="num">' + fmtTok(m.totalTokens) + '</td>' +
-        '<td class="num">' + speed + '</td>' +
-        '<td class="num">' + costStr + '</td>' +
-        '<td><div class="share"><div class="share-track"><div class="share-fill' + (pct > 60 ? ' is-accent' : '') + '" style="width:' + pct + '%"></div></div><span class="share-pct">' + pct + '%</span></div></td>' +
-        '</tr>';
-    }).join('');
+    return;
   }
-
-  renderSessions(list);
-  renderAlerts(list);
+  var mMax = 1;
+  for (var mi = 0; mi < models.length; mi++) {
+    if ((models[mi].totalTokens || 0) > mMax) mMax = models[mi].totalTokens || 0;
+  }
+  mtb.innerHTML = models.map(function (m) {
+    var pct = Math.round(((m.totalTokens || 0) / mMax) * 100);
+    var costStr = m.isFree || !m.cost ? 'free' : '$' + (m.cost || 0).toFixed(2);
+    var speed = m.tokPerSec > 0 ? Math.round(m.tokPerSec) : '—';
+    return '<tr><td class="mono">' + esc(m.name) + '</td>' +
+      '<td class="num">' + (m.sessions || 0) + '</td>' +
+      '<td class="num">' + (m.requests || 0) + '</td>' +
+      '<td class="num">' + fmtTok(m.inputTokens) + '</td>' +
+      '<td class="num">' + fmtTok(m.outputTokens) + '</td>' +
+      '<td class="num">' + fmtTok(m.cacheRead) + '</td>' +
+      '<td class="num">' + fmtTok(m.totalTokens) + '</td>' +
+      '<td class="num">' + speed + '</td>' +
+      '<td class="num">' + costStr + '</td>' +
+      '<td><div class="share"><div class="share-track"><div class="share-fill' + (pct > 60 ? ' is-accent' : '') + '" style="width:' + pct + '%"></div></div><span class="share-pct">' + pct + '%</span></div></td></tr>';
+  }).join('');
 }
 
 function renderSessions(filtered) {
