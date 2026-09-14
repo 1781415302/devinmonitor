@@ -1,10 +1,11 @@
 # DevinMonitor
 
-**[Devin CLI](https://windsurf.com/devin) 的 Token 与成本监控工具。**
+**Devin CLI / WSL / MiMoCode 的 Token 与成本监控工具。**
 
-DevinMonitor 读取 Devin CLI 的本地会话数据库，提供实时监控、
-用量报表和成本追踪——还包含其他监控工具没有的 Devin 专属指标
-（TTFT、tokens/sec、finish-reason 分布、上下文增长曲线、子代理统计）。
+DevinMonitor 读取本地会话数据库，提供实时监控、用量报表和成本追踪——
+还包含其他监控工具没有的 Devin 专属指标（TTFT、tokens/sec、
+finish-reason 分布、上下文增长曲线、子代理统计）。在 Windows 上会
+默认合并本机 Devin、WSL 中的 Devin，以及 MiMoCode 用量。
 
 [English](README.md)
 
@@ -90,15 +91,13 @@ p50/p95 TTFT 和总时、截断率，以及该模型的各工具明细。
 
 ## 安装
 
-```bash
-go install github.com/garywhat/devinmonitor@latest
-```
-
-或从 [Releases](../../releases) 下载预编译二进制。
+从 [Releases](https://github.com/1781415302/devinmonitor/releases) 下载预编译二进制
+（Windows / Linux / macOS，amd64 + arm64）。
 
 或从源码编译：
+
 ```bash
-git clone https://github.com/garywhat/devinmonitor.git
+git clone https://github.com/1781415302/devinmonitor.git
 cd devinmonitor
 go build -o devinmonitor .
 ```
@@ -106,37 +105,30 @@ go build -o devinmonitor .
 ## 用法
 
 ```bash
-# 实时面板（需要 TTY）
+# 数据源（本机 Devin + WSL + MiMo）
+devinmonitor sources
+
+# Web 用量面板（默认 :19191，SSE 实时）
+devinmonitor web --open
+
+# 实时 TUI（需要 TTY）
 devinmonitor live
 
-# 会话列表
+# 会话列表 / 详情
 devinmonitor sessions
+devinmonitor session wsl:halved-noodle
+devinmonitor session mimo:ses_xxx
 
-# 会话详情
-devinmonitor session fragrant-hunter
-
-# 按日用量，含每模型明细
+# 报表
 devinmonitor daily --breakdown
-
-# 按周报表，周一起始
 devinmonitor weekly --start-day monday --breakdown
-
-# 按月报表
 devinmonitor monthly
-
-# 模型分析
 devinmonitor models
-
-# 模型详情
-devinmonitor model glm-5-2
-
-# 项目用量
+devinmonitor model xiaomi/mimo-x-pro-preview
 devinmonitor projects
-
-# 子代理使用统计
 devinmonitor agents
 
-# Prometheus 指标端点
+# Prometheus 指标
 devinmonitor metrics --addr :9101
 
 # 导出标准化 JSON
@@ -146,8 +138,11 @@ devinmonitor export --detailed > usage.json
 ### 全局参数
 
 ```
---data-dir string   Devin 数据目录（默认自动探测）
+--data-dir string   指定单一数据目录（不合并 WSL / MiMo）
 --locale string     语言 en/zh（默认从系统探测）
+--no-wsl            不合并 WSL 上的 Devin
+--no-mimo           不合并 MiMoCode 的 mimocode.db
+--wsl stringArray   只合并指定 WSL 发行版（可重复）
 ```
 
 ### 实时面板快捷键
@@ -183,58 +178,52 @@ DevinMonitor 从 Devin CLI 的数据目录读取 `sessions.db`：
 
 ### Windows + WSL + MiMo 合并
 
-在 Windows 上，默认自动探测：
-1. **Devin 本机** `%APPDATA%\devin\cli\sessions.db`
-2. **WSL 发行版** 里的 Devin `sessions.db`（`wsl.exe` 快照，避免 SQLITE_BUSY）
-3. **MiMoCode** `~/.local/share/mimocode/mimocode.db`（token/工具用量）
+在 Windows 上，默认自动探测并合并：
 
-三者合并进同一套报表与 Web 面板。
+| 来源 | 路径 | 说明 |
+|------|------|------|
+| `local` | `%APPDATA%\devin\cli\sessions.db` | 本机 Devin |
+| `wsl:<发行版>` | 各 WSL 里的 `~/.local/share/devin/cli/sessions.db` | 经 `wsl.exe` 快照，避免 SQLITE_BUSY |
+| `mimo` | `~/.local/share/mimocode/mimocode.db` | MiMoCode token / 工具用量 |
 
 ```bash
-# 默认：本机 + 全部含 Devin DB 的 WSL
-devinmonitor sources
-devinmonitor sessions
-
-# 只看本机
-devinmonitor --no-wsl sessions
-
-# 只合并指定发行版
+devinmonitor sources                 # 查看各源会话数与路径
+devinmonitor --no-wsl sessions       # 关掉 WSL
+devinmonitor --no-mimo sessions      # 关掉 MiMo
 devinmonitor --wsl Ubuntu-18.04 sessions
-
-# 指定 --data-dir 时强制单源（不合并 WSL）
-devinmonitor --data-dir /path/to/cli sessions
+devinmonitor --data-dir /path/to/cli sessions   # 强制单源
 ```
+
+合并后：
+- 会话 ID 带前缀：`wsl:halved-noodle`、`mimo:ses_xxx`
+- 也可用完整形式：`session wsl:Ubuntu-18.04/halved-noodle`
+- `models` / `cost` / `daily` / `web` 自动汇总全部来源
+
+MiMo 的 tokens/sec 由文本 part 的 `start/end` 估算（排除工具等待），
+与 Devin 上报的生成速度数量级可比，但不是同一字段。
+
+连接采用只读 + WAL + `query_only`，不会阻塞上游写入。
 
 ### Web 用量面板
 
-命令行启动本地 HTTP 面板，浏览器查看（SSE 每 5s 自动刷新，含 WSL 合并）：
-
 ```bash
 devinmonitor web                 # http://localhost:19191
+devinmonitor web --open          # 启动后打开浏览器
 devinmonitor web --port 19273
-devinmonitor web --open          # 启动后自动打开浏览器
-devinmonitor web --no-wsl        # 面板不含 WSL
-devinmonitor web --no-mimo       # 面板不含 MiMo
 ```
 
-默认端口 **19191**（避开 8080/3000）。
+默认端口 **19191**（避开 8080/3000）。SSE 每 5 秒自动刷新用量数据；
+改代码重新编译后需重启 `web` 进程。
 
-页面内容：
-- KPI：会话 / 请求 / 输入·输出·缓存 token / 成本 / 数据源数
-- 数据源列表（local + wsl:*）
-- Token 构成条形图
-- 模型用量表（请求、token、速度、成本、占比）
+页面（亮色 Swiss 极简）：
+- KPI：会话 / 请求 / 输入·输出·缓存 / 总 Token / 成本 / 数据源数
+- 数据源 chip（local / wsl / mimo）
+- Token 构成堆叠条
+- 模型表（含 t/s、成本、占比）
 - 会话表（可按来源筛选）
 - 告警
 
 API：`/api/sessions` `/api/models` `/api/sources` `/api/cost-summary` `/sse`
-
-合并后：
-- 会话 ID 带前缀，如 `wsl:halved-noodle`
-- `session wsl:halved-noodle` 或 `session wsl:Ubuntu-18.04/halved-noodle` 均可
-- `models` / `cost` / `daily` 等报表自动汇总两边用量
-
-连接采用只读 + WAL + `query_only` 模式，不会阻塞 Devin CLI 的写入。
 
 ### Schema 适配
 
@@ -275,11 +264,14 @@ curl http://localhost:9101/metrics
 ## 架构
 
 ```
-sessions.db -> Reader（schema 适配器）-> 标准化 model 类型
-                                       |-- Report（sessions/daily/weekly/monthly/models/projects/agents）
-                                       |-- Live（bubbletea 面板）
-                                       |-- Export（稳定 JSON，供 web 上传）
-                                       |-- Metrics（Prometheus 端点）
+Devin local sessions.db ──┐
+WSL sessions.db (快照) ───┼─ MultiReader ─ 标准化 model
+MiMo mimocode.db ─────────┘        │
+                                   ├─ Report（sessions/daily/…/models/projects/agents）
+                                   ├─ Live（bubbletea）
+                                   ├─ Web（HTTP + SSE，:19191）
+                                   ├─ Export（稳定 JSON）
+                                   └─ Metrics（Prometheus）
 ```
 
 导出格式（`export_schema: 1`）独立于 Devin 内部 schema，

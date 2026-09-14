@@ -1,11 +1,12 @@
 # DevinMonitor
 
-**Token & cost monitor for the [Devin CLI](https://windsurf.com/devin).**
+**Token & cost monitor for Devin CLI, WSL, and MiMoCode.**
 
-DevinMonitor reads Devin CLI's local session database and provides
-real-time monitoring, usage reports, and cost tracking — with
-Devin-specific metrics (TTFT, tokens/sec, finish-reason distribution,
-context growth, sub-agent usage) that other monitors don't offer.
+DevinMonitor reads local session databases and provides real-time
+monitoring, usage reports, and cost tracking — with Devin-specific
+metrics (TTFT, tokens/sec, finish-reason distribution, context growth,
+sub-agent usage) that other monitors don't offer. On Windows it merges
+local Devin, Devin inside WSL distros, and MiMoCode usage by default.
 
 [中文文档](README.zh-CN.md)
 
@@ -99,15 +100,14 @@ output length.
 
 ## Install
 
-```bash
-go install github.com/garywhat/devinmonitor@latest
-```
-
-Or download a pre-built binary from [Releases](../../releases).
+Download a pre-built binary from
+[Releases](https://github.com/1781415302/devinmonitor/releases)
+(Windows / Linux / macOS, amd64 + arm64).
 
 Or build from source:
+
 ```bash
-git clone https://github.com/garywhat/devinmonitor.git
+git clone https://github.com/1781415302/devinmonitor.git
 cd devinmonitor
 go build -o devinmonitor .
 ```
@@ -115,37 +115,30 @@ go build -o devinmonitor .
 ## Usage
 
 ```bash
-# Real-time dashboard (needs a TTY)
+# Data sources (local Devin + WSL + MiMo)
+devinmonitor sources
+
+# Web usage dashboard (default :19191, SSE live)
+devinmonitor web --open
+
+# Live TUI (needs a TTY)
 devinmonitor live
 
-# Session list
+# Sessions
 devinmonitor sessions
+devinmonitor session wsl:halved-noodle
+devinmonitor session mimo:ses_xxx
 
-# Session detail
-devinmonitor session fragrant-hunter
-
-# Daily usage with per-model breakdown
+# Reports
 devinmonitor daily --breakdown
-
-# Weekly report starting on Monday
 devinmonitor weekly --start-day monday --breakdown
-
-# Monthly report
 devinmonitor monthly
-
-# Model analytics
 devinmonitor models
-
-# Model detail
-devinmonitor model glm-5-2
-
-# Per-project usage
+devinmonitor model xiaomi/mimo-x-pro-preview
 devinmonitor projects
-
-# Sub-agent usage statistics
 devinmonitor agents
 
-# Prometheus metrics endpoint
+# Prometheus metrics
 devinmonitor metrics --addr :9101
 
 # Export normalized JSON
@@ -155,8 +148,11 @@ devinmonitor export --detailed > usage.json
 ### Global flags
 
 ```
---data-dir string   Devin data directory (default: auto-detect)
---locale string     Language: en / zh (default: auto-detect from system)
+--data-dir string   Single data directory (skips WSL / MiMo merge)
+--locale string     Language: en / zh (default: auto-detect)
+--no-wsl            Do not merge WSL Devin stores
+--no-mimo           Do not merge MiMoCode mimocode.db
+--wsl stringArray   Only merge these WSL distros (repeatable)
 ```
 
 ### Live dashboard controls
@@ -190,35 +186,50 @@ DevinMonitor reads `sessions.db` from Devin CLI's data directory:
 
 Override with `--data-dir` or the `DEVIN_DATA_DIR` environment variable.
 
-### Windows + WSL merge
+### Windows + WSL + MiMo merge
 
-On Windows, installed WSL distros are auto-detected. When a distro has a
-Devin CLI `sessions.db`, devinmonitor copies a snapshot via `wsl.exe`
-into a temp directory (avoids SQLITE_BUSY over `\\wsl.localhost`) and
-merges it with the local store.
+On Windows, sources are auto-detected and merged:
+
+| Source | Path | Notes |
+|--------|------|-------|
+| `local` | `%APPDATA%\devin\cli\sessions.db` | Local Devin |
+| `wsl:<distro>` | `~/.local/share/devin/cli/sessions.db` in each WSL | Snapshotted via `wsl.exe` (avoids SQLITE_BUSY) |
+| `mimo` | `~/.local/share/mimocode/mimocode.db` | MiMoCode tokens / tools |
 
 ```bash
-# Default: local + every WSL distro that has a Devin DB
-devinmonitor sources
-devinmonitor sessions
-
-# Local only
+devinmonitor sources                 # inspect sources
 devinmonitor --no-wsl sessions
-
-# Only specific distros
+devinmonitor --no-mimo sessions
 devinmonitor --wsl Ubuntu-18.04 sessions
-
-# Explicit --data-dir forces a single source (no WSL merge)
-devinmonitor --data-dir /path/to/cli sessions
+devinmonitor --data-dir /path/to/cli sessions   # single source
 ```
 
 After merge:
-- Session IDs are prefixed, e.g. `wsl:halved-noodle`
-- `session wsl:halved-noodle` or `session wsl:Ubuntu-18.04/halved-noodle`
-- `models` / `cost` / `daily` aggregate both sides automatically
+- Session IDs are prefixed: `wsl:halved-noodle`, `mimo:ses_xxx`
+- Full form also works: `session wsl:Ubuntu-18.04/halved-noodle`
+- `models` / `cost` / `daily` / `web` aggregate all sources
 
-The connection is read-only + WAL + `query_only`, so it won't block
-Devin CLI's writes.
+MiMo tokens/sec is estimated from text part `start`/`end` timings
+(excluding tool wait). Same order of magnitude as Devin's reported
+generation speed, but not the same field.
+
+Connections are read-only + WAL + `query_only`.
+
+### Web usage dashboard
+
+```bash
+devinmonitor web                 # http://localhost:19191
+devinmonitor web --open
+devinmonitor web --port 19273
+```
+
+Default port **19191** (avoids common 8080/3000). SSE refreshes usage
+every 5s; rebuild + restart `web` after code changes.
+
+Light Swiss-minimal UI: KPIs, source chips, stacked token bar, model
+table (t/s, cost, share), filterable sessions, alerts.
+
+APIs: `/api/sessions` `/api/models` `/api/sources` `/api/cost-summary` `/sse`
 
 ### Schema adaptation
 
@@ -260,11 +271,14 @@ curl http://localhost:9101/metrics
 ## Architecture
 
 ```
-sessions.db -> Reader (schema adapter) -> Normalized model types
-                                         |-- Report (sessions/daily/weekly/monthly/models/projects/agents)
-                                         |-- Live (bubbletea dashboard)
-                                         |-- Export (stable JSON for web upload)
-                                         |-- Metrics (Prometheus endpoint)
+Devin local sessions.db ──┐
+WSL sessions.db (snapshot) ┼─ MultiReader ─ Normalized models
+MiMo mimocode.db ──────────┘        │
+                                    ├─ Report (sessions/daily/…/models/projects/agents)
+                                    ├─ Live (bubbletea)
+                                    ├─ Web (HTTP + SSE, :19191)
+                                    ├─ Export (stable JSON)
+                                    └─ Metrics (Prometheus)
 ```
 
 The export format (`export_schema: 1`) is independent of Devin's
