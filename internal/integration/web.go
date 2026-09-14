@@ -549,6 +549,34 @@ a { color: var(--accent); }
   border-color: var(--ink);
   color: #fff;
 }
+.filter-bar {
+  border: 1px solid var(--ink);
+  background: var(--surface);
+  padding: 10px 12px;
+  margin-bottom: 10px;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+.filter-row {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px 10px;
+}
+.filter-label {
+  font-size: .68rem;
+  text-transform: uppercase;
+  letter-spacing: .08em;
+  color: var(--ink-3);
+  font-weight: 600;
+  min-width: 48px;
+}
+.filter-count {
+  font-family: var(--mono);
+  font-size: .72rem;
+  color: var(--ink-3);
+}
 
 .block { margin-bottom: 32px; }
 
@@ -767,13 +795,24 @@ footer.foot {
   <section class="block">
     <div class="sec">
       <h2>会话</h2>
-      <div class="sec-tools" id="sourceFilter" role="group" aria-label="来源筛选"></div>
+    </div>
+    <div class="filter-bar" id="sessionFilters">
+      <div class="filter-row">
+        <span class="filter-label">服务商</span>
+        <div class="sec-tools" id="providerFilter" role="group" aria-label="按服务商筛选"></div>
+      </div>
+      <div class="filter-row">
+        <span class="filter-label">实例</span>
+        <div class="sec-tools" id="sourceFilter" role="group" aria-label="按实例筛选"></div>
+      </div>
+      <div class="filter-row filter-count" id="filterCount"></div>
     </div>
     <div class="panel panel-scroll">
       <table id="sessions">
         <thead><tr>
           <th>ID</th>
-          <th>源</th>
+          <th>服务</th>
+          <th>实例</th>
           <th>标题</th>
           <th>模型</th>
           <th>项目</th>
@@ -812,6 +851,7 @@ es.onerror = function () {
   document.getElementById('updated').textContent = '连接中断 · 重试中';
 };
 
+var activeProvider = 'all';
 var activeSource = 'all';
 var lastSessions = [];
 
@@ -838,20 +878,38 @@ function esc(s) {
   d.textContent = s == null ? '' : String(s);
   return d.innerHTML;
 }
+// Provider: Devin / MiMo / OpenCode
+function providerOf(src) {
+  src = src || 'local';
+  if (src === 'mimo' || src.indexOf('mimo') >= 0) return 'mimo';
+  if (src === 'opencode' || src.indexOf('opencode') >= 0) return 'opencode';
+  return 'devin';
+}
+function providerLabel(p) {
+  if (p === 'mimo') return 'MiMo';
+  if (p === 'opencode') return 'OpenCode';
+  if (p === 'devin') return 'Devin';
+  return p;
+}
+// Instance: local / wsl:Ubuntu-18.04 / wsl-opencode:Ubuntu-20.04 ...
+function instanceOf(src) {
+  return src || 'local';
+}
+function instanceLabel(src) {
+  if (!src || src === 'local') return 'Windows 本机';
+  if (src === 'mimo') return 'Windows 本机';
+  if (src === 'opencode') return 'Windows 本机';
+  return src; // e.g. wsl:Ubuntu-18.04
+}
 function srcClass(src) {
-  if (!src || src === 'local') return 'local';
-  if (src === 'mimo') return 'mimo';
-  if (src === 'opencode') return 'opencode';
-  if (src.indexOf('opencode') >= 0) return 'opencode';
-  if (src.indexOf('mimo') >= 0) return 'mimo';
-  if (src.indexOf('wsl') === 0) return 'wsl';
-  return 'wsl';
+  var p = providerOf(src);
+  if (p === 'mimo') return 'mimo';
+  if (p === 'opencode') return 'opencode';
+  if (src && src.indexOf('wsl') === 0) return 'wsl';
+  return 'local';
 }
 function srcLabel(src) {
-  if (!src || src === 'local') return 'local';
-  if (src === 'mimo') return 'mimo';
-  if (src === 'opencode') return 'opencode';
-  return src;
+  return instanceLabel(src);
 }
 
 function renderSources(sources) {
@@ -862,49 +920,102 @@ function renderSources(sources) {
   }
   box.innerHTML = sources.map(function (x) {
     var c = srcClass(x.label);
-    return '<span class="chip ' + c + '"><b>' + esc(srcLabel(x.label)) + '</b>' +
+    var p = providerOf(x.label);
+    return '<span class="chip ' + c + '"><b>' + esc(providerLabel(p)) + '</b>' +
+      '<span class="n">' + esc(instanceLabel(x.label)) + (x.label && x.label !== 'local' && x.label !== 'mimo' && x.label !== 'opencode' ? '' : '') + '</span>' +
       '<span class="n">' + x.sessions + ' 会话</span>' +
       '<span class="n">v' + x.schema + '</span>' +
       '<span class="path" title="' + esc(x.path) + '">' + esc(x.path) + '</span></span>';
   }).join('');
 }
 
-function renderFilter(sessions) {
-  var box = document.getElementById('sourceFilter');
-  var set = {};
-  sessions.forEach(function (x) { set[x.Source || 'local'] = true; });
-  var keys = Object.keys(set).sort();
-  if (keys.length <= 1) { box.innerHTML = ''; return; }
-  var opts = ['all'].concat(keys);
-  box.innerHTML = opts.map(function (k) {
-    var on = activeSource === k ? ' on' : '';
-    var label = k === 'all' ? '全部' : srcLabel(k);
-    return '<button type="button" class="' + on.trim() + '" data-src="' + esc(k) + '" aria-pressed="' + (activeSource === k) + '">' + esc(label) + '</button>';
+function matchesFilters(x) {
+  var src = instanceOf(x.Source);
+  if (activeProvider !== 'all' && providerOf(src) !== activeProvider) return false;
+  if (activeSource !== 'all' && src !== activeSource) return false;
+  return true;
+}
+
+function renderFilters(sessions) {
+  var providers = {};
+  var instances = {};
+  sessions.forEach(function (x) {
+    var src = instanceOf(x.Source);
+    providers[providerOf(src)] = true;
+    if (activeProvider === 'all' || providerOf(src) === activeProvider) {
+      instances[src] = true;
+    }
+  });
+
+  var pbox = document.getElementById('providerFilter');
+  var pkeys = ['devin', 'mimo', 'opencode'].filter(function (k) { return providers[k]; });
+  var popts = ['all'].concat(pkeys);
+  pbox.innerHTML = popts.map(function (k) {
+    var on = activeProvider === k ? ' on' : '';
+    var label = k === 'all' ? '全部' : providerLabel(k);
+    return '<button type="button" class="' + on.trim() + '" data-p="' + esc(k) + '" aria-pressed="' + (activeProvider === k) + '">' + esc(label) + '</button>';
   }).join('');
-  Array.prototype.forEach.call(box.querySelectorAll('button'), function (btn) {
+  Array.prototype.forEach.call(pbox.querySelectorAll('button'), function (btn) {
     btn.onclick = function () {
-      activeSource = btn.getAttribute('data-src');
+      activeProvider = btn.getAttribute('data-p');
+      activeSource = 'all';
+      renderFilters(lastSessions);
       renderSessions(lastSessions);
-      renderFilter(lastSessions);
     };
   });
+
+  var sbox = document.getElementById('sourceFilter');
+  var skeys = Object.keys(instances).sort();
+  // Friendly order: local mimo opencode then wsl:*
+  skeys.sort(function (a, b) {
+    var rank = function (s) {
+      if (s === 'local') return 0;
+      if (s === 'mimo') return 1;
+      if (s === 'opencode') return 2;
+      return 10;
+    };
+    return rank(a) - rank(b) || a.localeCompare(b);
+  });
+  var sopts = ['all'].concat(skeys);
+  sbox.innerHTML = sopts.map(function (k) {
+    var on = activeSource === k ? ' on' : '';
+    var label = k === 'all' ? '全部' : instanceLabel(k);
+    // count for this instance under current provider
+    var n = sessions.filter(function (x) {
+      return instanceOf(x.Source) === k &&
+        (activeProvider === 'all' || providerOf(instanceOf(x.Source)) === activeProvider);
+    }).length;
+    if (k !== 'all') label = label + ' (' + n + ')';
+    return '<button type="button" class="' + on.trim() + '" data-s="' + esc(k) + '" aria-pressed="' + (activeSource === k) + '">' + esc(label) + '</button>';
+  }).join('');
+  Array.prototype.forEach.call(sbox.querySelectorAll('button'), function (btn) {
+    btn.onclick = function () {
+      activeSource = btn.getAttribute('data-s');
+      renderFilters(lastSessions);
+      renderSessions(lastSessions);
+    };
+  });
+
+  var n = sessions.filter(matchesFilters).length;
+  document.getElementById('filterCount').textContent =
+    '显示 ' + n + ' / ' + sessions.length + ' 个会话';
 }
 
 function renderSessions(sessions) {
   var tb = document.querySelector('#sessions tbody');
-  var filtered = sessions.filter(function (x) {
-    if (activeSource === 'all') return true;
-    return (x.Source || 'local') === activeSource;
-  });
+  var filtered = sessions.filter(matchesFilters);
   if (!filtered.length) {
-    tb.innerHTML = '<tr><td colspan="11" class="empty">无会话</td></tr>';
+    tb.innerHTML = '<tr><td colspan="12" class="empty">无会话</td></tr>';
     return;
   }
   tb.innerHTML = filtered.slice(0, 80).map(function (x) {
-    var c = srcClass(x.Source);
+    var src = instanceOf(x.Source);
+    var p = providerOf(src);
+    var c = srcClass(src);
     return '<tr>' +
       '<td class="mono">' + esc(x.ID) + '</td>' +
-      '<td><span class="tag ' + c + '">' + esc(srcLabel(x.Source)) + '</span></td>' +
+      '<td><span class="tag ' + c + '">' + esc(providerLabel(p)) + '</span></td>' +
+      '<td class="mono">' + esc(instanceLabel(src)) + '</td>' +
       '<td class="trunc" title="' + esc(x.Title) + '">' + esc(x.Title) + '</td>' +
       '<td class="mono">' + esc(x.Model) + '</td>' +
       '<td class="trunc" title="' + esc(x.Project) + '">' + esc(x.Project) + '</td>' +
@@ -985,7 +1096,7 @@ function render(d) {
   }
 
   lastSessions = d.sessions || [];
-  renderFilter(lastSessions);
+  renderFilters(lastSessions);
   renderSessions(lastSessions);
 
   var al = document.getElementById('alerts');
