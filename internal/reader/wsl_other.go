@@ -24,6 +24,11 @@ func SnapshotWSLMiMo(distro string) (string, error) {
 	return "", nil
 }
 
+// SnapshotWSLOpenCode is unsupported outside Windows.
+func SnapshotWSLOpenCode(distro string) (string, error) {
+	return "", nil
+}
+
 // WSLDBStat is unsupported outside Windows.
 func WSLDBStat(distro string) (mtime, size int64, ok bool) {
 	return 0, 0, false
@@ -31,6 +36,11 @@ func WSLDBStat(distro string) (mtime, size int64, ok bool) {
 
 // WSLMiMoStat is unsupported outside Windows.
 func WSLMiMoStat(distro string) (mtime, size int64, ok bool) {
+	return 0, 0, false
+}
+
+// WSLOpenCodeStat is unsupported outside Windows.
+func WSLOpenCodeStat(distro string) (mtime, size int64, ok bool) {
 	return 0, 0, false
 }
 

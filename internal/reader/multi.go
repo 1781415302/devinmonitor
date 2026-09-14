@@ -29,26 +29,34 @@ type MultiReader struct {
 }
 
 // wslTrack remembers how to re-snapshot a WSL source for live refresh.
+// family is "devin", "mimo", or "opencode".
 type wslTrack struct {
-	label      string // "wsl:Ubuntu-18.04" or "wsl-mimo:Ubuntu-18.04"
-	distro     string // "Ubuntu-18.04"
-	snapDir    string // current Windows-side snapshot dir
-	mtime      int64
-	size       int64
-	isMiMo     bool
+	label   string
+	distro  string
+	snapDir string
+	mtime   int64
+	size    int64
+	family  string
 }
 
 // trackWSLFP records a WSL Devin source with a known upstream fingerprint.
 func (m *MultiReader) trackWSLFP(label, distro, snapDir string, mt, sz int64) {
 	m.wsl = append(m.wsl, wslTrack{
-		label: label, distro: distro, snapDir: snapDir, mtime: mt, size: sz,
+		label: label, distro: distro, snapDir: snapDir, mtime: mt, size: sz, family: "devin",
 	})
 }
 
 // trackWSLMiMoFP records a WSL MiMo source fingerprint.
 func (m *MultiReader) trackWSLMiMoFP(label, distro, snapDir string, mt, sz int64) {
 	m.wsl = append(m.wsl, wslTrack{
-		label: label, distro: distro, snapDir: snapDir, mtime: mt, size: sz, isMiMo: true,
+		label: label, distro: distro, snapDir: snapDir, mtime: mt, size: sz, family: "mimo",
+	})
+}
+
+// trackWSLOpenCodeFP records a WSL OpenCode source fingerprint.
+func (m *MultiReader) trackWSLOpenCodeFP(label, distro, snapDir string, mt, sz int64) {
+	m.wsl = append(m.wsl, wslTrack{
+		label: label, distro: distro, snapDir: snapDir, mtime: mt, size: sz, family: "opencode",
 	})
 }
 
@@ -61,9 +69,12 @@ func (m *MultiReader) Refresh() error {
 		t := &m.wsl[i]
 		var mt, sz int64
 		var ok bool
-		if t.isMiMo {
+		switch t.family {
+		case "mimo":
 			mt, sz, ok = WSLMiMoStat(t.distro)
-		} else {
+		case "opencode":
+			mt, sz, ok = WSLOpenCodeStat(t.distro)
+		default:
 			mt, sz, ok = WSLDBStat(t.distro)
 		}
 		if !ok {
@@ -75,13 +86,20 @@ func (m *MultiReader) Refresh() error {
 		var newDir string
 		var err error
 		var r Reader
-		if t.isMiMo {
+		switch t.family {
+		case "mimo":
 			newDir, err = SnapshotWSLMiMo(t.distro)
 			if err != nil {
 				return fmt.Errorf("refresh wsl-mimo %s: %w", t.distro, err)
 			}
 			r, err = newMiMoReader(filepath.Join(newDir, "mimocode.db"))
-		} else {
+		case "opencode":
+			newDir, err = SnapshotWSLOpenCode(t.distro)
+			if err != nil {
+				return fmt.Errorf("refresh wsl-opencode %s: %w", t.distro, err)
+			}
+			r, err = newOpenCodeReader(filepath.Join(newDir, "opencode.db"))
+		default:
 			newDir, err = SnapshotWSLDB(t.distro)
 			if err != nil {
 				return fmt.Errorf("refresh wsl %s: %w", t.distro, err)

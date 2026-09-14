@@ -16,12 +16,14 @@ import (
 	"github.com/garywhat/devinmonitor/internal/model"
 )
 
-// mimoReader reads MiMoCode / MiMo Desktop usage from mimocode.db.
-// Schema (drizzle): session / message / part. Assistant messages carry
+// mimoReader reads MiMoCode / OpenCode usage. Schema family is the same
+// (drizzle): session / message / part. Assistant messages carry
 // tokens{input,output,reasoning,cache{read,write}} and cost.
+// kind is "mimo" or "opencode" for labels/BackendType.
 type mimoReader struct {
 	db   *sql.DB
 	path string
+	kind string // "mimo" | "opencode"
 }
 
 // ResolveMiMoDBPath finds mimocode.db across platforms.
@@ -71,12 +73,54 @@ func ResolveMiMoDBPath(dataDir string) string {
 	return ""
 }
 
+// ResolveOpenCodeDBPath finds opencode.db across platforms.
+func ResolveOpenCodeDBPath(dataDir string) string {
+	var candidates []string
+	if dataDir != "" {
+		candidates = append(candidates, filepath.Join(dataDir, "opencode.db"))
+	}
+	if env := os.Getenv("OPENCODE_DATA_DIR"); env != "" {
+		candidates = append(candidates, filepath.Join(env, "opencode.db"))
+	}
+	home, _ := os.UserHomeDir()
+	if home != "" {
+		candidates = append(candidates,
+			filepath.Join(home, ".local", "share", "opencode", "opencode.db"),
+			filepath.Join(home, ".opencode", "opencode.db"),
+		)
+	}
+	if runtime.GOOS == "windows" {
+		if appdata := os.Getenv("APPDATA"); appdata != "" {
+			candidates = append(candidates, filepath.Join(appdata, "opencode", "opencode.db"))
+		}
+	}
+	if runtime.GOOS == "darwin" && home != "" {
+		candidates = append(candidates,
+			filepath.Join(home, "Library", "Application Support", "opencode", "opencode.db"),
+		)
+	}
+	if xdg := os.Getenv("XDG_DATA_HOME"); xdg != "" {
+		candidates = append(candidates, filepath.Join(xdg, "opencode", "opencode.db"))
+	}
+	for _, c := range candidates {
+		if info, err := os.Stat(c); err == nil && !info.IsDir() {
+			return c
+		}
+	}
+	return ""
+}
+
 // HasMiMoDB reports whether a mimocode.db is discoverable.
 func HasMiMoDB(dataDir string) bool {
 	return ResolveMiMoDBPath(dataDir) != ""
 }
 
-func newMiMoReader(path string) (*mimoReader, error) {
+// HasOpenCodeDB reports whether an opencode.db is discoverable.
+func HasOpenCodeDB(dataDir string) bool {
+	return ResolveOpenCodeDBPath(dataDir) != ""
+}
+
+func openFamilyDB(path, kind string) (*mimoReader, error) {
 	abs, err := filepath.Abs(path)
 	if err != nil {
 		abs = path
@@ -84,14 +128,22 @@ func newMiMoReader(path string) (*mimoReader, error) {
 	dsn := fmt.Sprintf("file:%s?mode=ro&_journal_mode=WAL&_query_only=1&_busy_timeout=5000", abs)
 	db, err := sql.Open("sqlite", dsn)
 	if err != nil {
-		return nil, fmt.Errorf("open mimo db: %w", err)
+		return nil, fmt.Errorf("open %s db: %w", kind, err)
 	}
 	db.SetMaxOpenConns(1)
 	if err := db.Ping(); err != nil {
 		db.Close()
-		return nil, fmt.Errorf("ping mimo db: %w", err)
+		return nil, fmt.Errorf("ping %s db: %w", kind, err)
 	}
-	return &mimoReader{db: db, path: path}, nil
+	return &mimoReader{db: db, path: path, kind: kind}, nil
+}
+
+func newMiMoReader(path string) (*mimoReader, error) {
+	return openFamilyDB(path, "mimo")
+}
+
+func newOpenCodeReader(path string) (*mimoReader, error) {
+	return openFamilyDB(path, "opencode")
 }
 
 func (r *mimoReader) SchemaVersion() int { return 1 }
@@ -160,11 +212,11 @@ func (r *mimoReader) Sessions() ([]model.Session, error) {
 			ID:             s.id,
 			Title:          s.title,
 			WorkingDir:     s.dir,
-			BackendType:    "mimo",
+			BackendType:    r.kind,
 			AgentMode:      "build",
 			CreatedAt:      msToTime(s.created),
 			LastActivityAt: msToTime(s.updated),
-			Source:         "mimo",
+			Source:         r.kind,
 			ToolCalls:      map[string]int{},
 		}
 		if err := r.fillSession(&sess); err != nil {
@@ -190,11 +242,11 @@ func (r *mimoReader) Session(id string) (*model.Session, error) {
 		ID:             id,
 		Title:          title,
 		WorkingDir:     dir,
-		BackendType:    "mimo",
+		BackendType:    r.kind,
 		AgentMode:      "build",
 		CreatedAt:      msToTime(created),
 		LastActivityAt: msToTime(updated),
-		Source:         "mimo",
+		Source:         r.kind,
 		ToolCalls:      map[string]int{},
 	}
 	if err := r.fillSession(s); err != nil {

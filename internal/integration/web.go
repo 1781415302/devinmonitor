@@ -366,6 +366,7 @@ const webDashboardHTML = `<!DOCTYPE html>
   --src-local: #1D4ED8;
   --src-wsl: #7C3AED;
   --src-mimo: #0F766E;
+  --src-opencode: #B45309;
   --r: 2px;
   --font: "IBM Plex Sans", "PingFang SC", "Microsoft YaHei", system-ui, sans-serif;
   --mono: "JetBrains Mono", ui-monospace, Consolas, monospace;
@@ -463,6 +464,7 @@ a { color: var(--accent); }
 .chip.local { border-left: 3px solid var(--src-local); }
 .chip.wsl { border-left: 3px solid var(--src-wsl); }
 .chip.mimo { border-left: 3px solid var(--src-mimo); }
+.chip.opencode { border-left: 3px solid var(--src-opencode); }
 .chip .path {
   color: var(--ink-3);
   font-family: var(--mono);
@@ -640,6 +642,7 @@ tbody tr:hover { background: #FBFAF7; }
 .tag.local { color: var(--src-local); border-color: #BFDBFE; background: #EFF6FF; }
 .tag.wsl { color: var(--src-wsl); border-color: #DDD6FE; background: #F5F3FF; }
 .tag.mimo { color: var(--src-mimo); border-color: #99F6E4; background: #F0FDFA; }
+.tag.opencode { color: var(--src-opencode); border-color: #FDE68A; background: #FFFBEB; }
 .share {
   display: flex;
   align-items: center;
@@ -838,11 +841,16 @@ function esc(s) {
 function srcClass(src) {
   if (!src || src === 'local') return 'local';
   if (src === 'mimo') return 'mimo';
+  if (src === 'opencode') return 'opencode';
+  if (src.indexOf('opencode') >= 0) return 'opencode';
+  if (src.indexOf('mimo') >= 0) return 'mimo';
+  if (src.indexOf('wsl') === 0) return 'wsl';
   return 'wsl';
 }
 function srcLabel(src) {
   if (!src || src === 'local') return 'local';
   if (src === 'mimo') return 'mimo';
+  if (src === 'opencode') return 'opencode';
   return src;
 }
 

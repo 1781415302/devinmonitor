@@ -9,8 +9,9 @@ import (
 type SourceKind string
 
 const (
-	KindDevin SourceKind = "devin"
-	KindMiMo  SourceKind = "mimo"
+	KindDevin    SourceKind = "devin"
+	KindMiMo     SourceKind = "mimo"
+	KindOpenCode SourceKind = "opencode"
 )
 
 // DiscoveredSource is one AI session database found on this machine.
@@ -25,13 +26,14 @@ type DiscoveredSource struct {
 
 // ProbeWSLHits lists which supported AI stores exist in a WSL distro.
 type ProbeWSLHits struct {
-	Devin bool
-	MiMo  bool
+	Devin    bool
+	MiMo     bool
+	OpenCode bool
 }
 
 // DiscoverSources scans the local host and (on Windows) every WSL distro for
-// supported AI session stores. Lightweight: probes file existence only —
-// callers snapshot/open as needed.
+// supported AI session stores (Devin, MiMoCode, OpenCode). Lightweight:
+// probes file existence only — callers snapshot/open as needed.
 func DiscoverSources(onlyDistros []string, includeWSL, includeMiMo bool) []DiscoveredSource {
 	if os.Getenv("DEVIN_NO_WSL") == "1" {
 		includeWSL = false
@@ -39,6 +41,7 @@ func DiscoverSources(onlyDistros []string, includeWSL, includeMiMo bool) []Disco
 	if os.Getenv("DEVIN_NO_MIMO") == "1" {
 		includeMiMo = false
 	}
+	includeOpenCode := os.Getenv("DEVIN_NO_OPENCODE") != "1"
 
 	var out []DiscoveredSource
 	host := localHostTag()
@@ -54,6 +57,14 @@ func DiscoverSources(onlyDistros []string, includeWSL, includeMiMo bool) []Disco
 		if mp := ResolveMiMoDBPath(""); mp != "" {
 			out = append(out, DiscoveredSource{
 				Kind: KindMiMo, Host: host, Path: mp, Label: "mimo",
+			})
+		}
+	}
+	// Local OpenCode.
+	if includeOpenCode {
+		if op := ResolveOpenCodeDBPath(""); op != "" {
+			out = append(out, DiscoveredSource{
+				Kind: KindOpenCode, Host: host, Path: op, Label: "opencode",
 			})
 		}
 	}
@@ -74,6 +85,12 @@ func DiscoverSources(onlyDistros []string, includeWSL, includeMiMo bool) []Disco
 			out = append(out, DiscoveredSource{
 				Kind: KindMiMo, Host: "wsl:" + d, Path: wslMiMoDB,
 				Distro: d, Label: "wsl-mimo:" + d,
+			})
+		}
+		if includeOpenCode && hits.OpenCode {
+			out = append(out, DiscoveredSource{
+				Kind: KindOpenCode, Host: "wsl:" + d, Path: wslOpenCodeDB,
+				Distro: d, Label: "wsl-opencode:" + d,
 			})
 		}
 	}

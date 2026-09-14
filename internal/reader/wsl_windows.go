@@ -18,6 +18,9 @@ const wslDevinDB = ".local/share/devin/cli/sessions.db"
 // wslMiMoDB is the in-distro path of MiMoCode's session store.
 const wslMiMoDB = ".local/share/mimocode/mimocode.db"
 
+// wslOpenCodeDB is the in-distro path of OpenCode's session store.
+const wslOpenCodeDB = ".local/share/opencode/opencode.db"
+
 // WSLDistro describes a WSL distro that has a Devin sessions.db.
 type WSLDistro struct {
 	Name string // e.g. Ubuntu-18.04
@@ -123,8 +126,9 @@ func ProbeWSLServices(distro string) ProbeWSLHits {
 	script := fmt.Sprintf(`#!/bin/bash
 [ -f "$HOME/%s" ] && echo DEVIN
 [ -f "$HOME/%s" ] && echo MIMO
+[ -f "$HOME/%s" ] && echo OPENCODE
 exit 0
-`, wslDevinDB, wslMiMoDB)
+`, wslDevinDB, wslMiMoDB, wslOpenCodeDB)
 	sp := filepath.Join(tmp, "probe.sh")
 	if err := os.WriteFile(sp, []byte(script), 0o755); err != nil {
 		return hits
@@ -140,6 +144,7 @@ exit 0
 	s := string(out)
 	hits.Devin = strings.Contains(s, "DEVIN")
 	hits.MiMo = strings.Contains(s, "MIMO")
+	hits.OpenCode = strings.Contains(s, "OPENCODE")
 	return hits
 }
 
@@ -178,6 +183,72 @@ func WSLDBStat(distro string) (mtime, size int64, ok bool) {
 // WSLMiMoStat fingerprint for live refresh of WSL MiMo stores.
 func WSLMiMoStat(distro string) (mtime, size int64, ok bool) {
 	return WSLStatFile(distro, wslMiMoDB)
+}
+
+// WSLOpenCodeStat fingerprint for live refresh of WSL OpenCode stores.
+func WSLOpenCodeStat(distro string) (mtime, size int64, ok bool) {
+	return WSLStatFile(distro, wslOpenCodeDB)
+}
+
+// snapshotWSLFile copies a $HOME-relative sqlite db (+wal/shm) into a temp dir.
+func snapshotWSLFile(distro, relHome, outName, tag string) (string, error) {
+	winDir, err := os.MkdirTemp("", "devinmonitor-"+tag+"-"+sanitizeFile(distro)+"-")
+	if err != nil {
+		return "", err
+	}
+	wslDir, err := winToWSLPath(winDir)
+	if err != nil {
+		os.RemoveAll(winDir)
+		return "", err
+	}
+	script := fmt.Sprintf(`#!/bin/bash
+set -e
+src="$HOME/%s"
+dir='%s'
+mkdir -p "$dir"
+cp -f "$src" "$dir/%s"
+if [ -f "$src-wal" ]; then cp -f "$src-wal" "$dir/%s-wal"; fi
+if [ -f "$src-shm" ]; then cp -f "$src-shm" "$dir/%s-shm"; fi
+echo OK
+`, relHome, wslDir, outName, outName, outName)
+	scriptPath := filepath.Join(winDir, "snap.sh")
+	if err := os.WriteFile(scriptPath, []byte(script), 0o755); err != nil {
+		os.RemoveAll(winDir)
+		return "", err
+	}
+	wslScript, err := winToWSLPath(scriptPath)
+	if err != nil {
+		os.RemoveAll(winDir)
+		return "", err
+	}
+	cmd := exec.Command("wsl.exe", "-d", distro, "bash", wslScript)
+	var stderr bytes.Buffer
+	cmd.Stderr = &stderr
+	out, err := cmd.Output()
+	if err != nil {
+		os.RemoveAll(winDir)
+		return "", fmt.Errorf("wsl %s snapshot %s: %v (%s)", tag, distro, err, strings.TrimSpace(stderr.String()))
+	}
+	if !strings.Contains(string(out), "OK") {
+		os.RemoveAll(winDir)
+		return "", fmt.Errorf("wsl %s snapshot %s: unexpected output %q", tag, distro, out)
+	}
+	if _, err := os.Stat(filepath.Join(winDir, outName)); err != nil {
+		os.RemoveAll(winDir)
+		return "", fmt.Errorf("wsl %s snapshot %s: %s missing", tag, distro, outName)
+	}
+	_ = os.Remove(scriptPath)
+	return winDir, nil
+}
+
+// SnapshotWSLMiMo copies mimocode.db (+ -wal/-shm) from the distro.
+func SnapshotWSLMiMo(distro string) (string, error) {
+	return snapshotWSLFile(distro, wslMiMoDB, "mimocode.db", "wslmimo")
+}
+
+// SnapshotWSLOpenCode copies opencode.db (+ -wal/-shm) from the distro.
+func SnapshotWSLOpenCode(distro string) (string, error) {
+	return snapshotWSLFile(distro, wslOpenCodeDB, "opencode.db", "wslopencode")
 }
 
 // SnapshotWSLDB copies sessions.db (+ -wal/-shm) from the distro into a
@@ -233,57 +304,6 @@ echo OK
 		return "", fmt.Errorf("wsl snapshot %s: sessions.db missing after copy", distro)
 	}
 	// Drop the helper script so the dir only holds db files.
-	_ = os.Remove(scriptPath)
-	return winDir, nil
-}
-
-// SnapshotWSLMiMo copies mimocode.db (+ -wal/-shm) from the distro.
-func SnapshotWSLMiMo(distro string) (string, error) {
-	winDir, err := os.MkdirTemp("", "devinmonitor-wslmimo-"+sanitizeFile(distro)+"-")
-	if err != nil {
-		return "", err
-	}
-	wslDir, err := winToWSLPath(winDir)
-	if err != nil {
-		os.RemoveAll(winDir)
-		return "", err
-	}
-	script := fmt.Sprintf(`#!/bin/bash
-set -e
-src="$HOME/%s"
-dir='%s'
-mkdir -p "$dir"
-cp -f "$src" "$dir/mimocode.db"
-if [ -f "$src-wal" ]; then cp -f "$src-wal" "$dir/mimocode.db-wal"; fi
-if [ -f "$src-shm" ]; then cp -f "$src-shm" "$dir/mimocode.db-shm"; fi
-echo OK
-`, wslMiMoDB, wslDir)
-	scriptPath := filepath.Join(winDir, "snap.sh")
-	if err := os.WriteFile(scriptPath, []byte(script), 0o755); err != nil {
-		os.RemoveAll(winDir)
-		return "", err
-	}
-	wslScript, err := winToWSLPath(scriptPath)
-	if err != nil {
-		os.RemoveAll(winDir)
-		return "", err
-	}
-	cmd := exec.Command("wsl.exe", "-d", distro, "bash", wslScript)
-	var stderr bytes.Buffer
-	cmd.Stderr = &stderr
-	out, err := cmd.Output()
-	if err != nil {
-		os.RemoveAll(winDir)
-		return "", fmt.Errorf("wsl mimo snapshot %s: %v (%s)", distro, err, strings.TrimSpace(stderr.String()))
-	}
-	if !strings.Contains(string(out), "OK") {
-		os.RemoveAll(winDir)
-		return "", fmt.Errorf("wsl mimo snapshot %s: unexpected output %q", distro, out)
-	}
-	if _, err := os.Stat(filepath.Join(winDir, "mimocode.db")); err != nil {
-		os.RemoveAll(winDir)
-		return "", fmt.Errorf("wsl mimo snapshot %s: mimocode.db missing", distro)
-	}
 	_ = os.Remove(scriptPath)
 	return winDir, nil
 }

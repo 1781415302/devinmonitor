@@ -116,7 +116,7 @@ func OpenWith(opts OpenOptions) (Reader, error) {
 	type wslTrackInit struct {
 		label, distro, snapDir string
 		mt, sz                 int64
-		isMiMo                 bool
+		family                 string // devin|mimo|opencode
 	}
 	var tracks []wslTrackInit
 
@@ -125,9 +125,12 @@ func OpenWith(opts OpenOptions) (Reader, error) {
 			// Local host file.
 			var r Reader
 			var err error
-			if ds.Kind == KindMiMo {
+			switch ds.Kind {
+			case KindMiMo:
 				r, err = newMiMoReader(ds.Path)
-			} else {
+			case KindOpenCode:
+				r, err = newOpenCodeReader(ds.Path)
+			default:
 				r, err = openOneFile(ds.Path)
 			}
 			if err != nil {
@@ -154,25 +157,42 @@ func OpenWith(opts OpenOptions) (Reader, error) {
 			}
 			sources = append(sources, SourceRef{Label: ds.Label, Reader: r})
 			cleanups = append(cleanups, snapDir)
-			tracks = append(tracks, wslTrackInit{ds.Label, ds.Distro, snapDir, mt, sz, false})
+			tracks = append(tracks, wslTrackInit{ds.Label, ds.Distro, snapDir, mt, sz, "devin"})
 			continue
 		}
-		if ds.Kind == KindMiMo {
-			mt, sz, _ := WSLMiMoStat(ds.Distro)
-			snapDir, err := SnapshotWSLMiMo(ds.Distro)
-			if err != nil {
-				fmt.Fprintf(os.Stderr, "devinmonitor: skip %s: %v\n", ds.Label, err)
-				continue
+		if ds.Kind == KindMiMo || ds.Kind == KindOpenCode {
+			isMiMo := ds.Kind == KindMiMo
+			var mt, sz int64
+			var snapDir string
+			var err error
+			var r Reader
+			if isMiMo {
+				mt, sz, _ = WSLMiMoStat(ds.Distro)
+				snapDir, err = SnapshotWSLMiMo(ds.Distro)
+				if err == nil {
+					r, err = newMiMoReader(filepath.Join(snapDir, "mimocode.db"))
+				}
+			} else {
+				mt, sz, _ = WSLOpenCodeStat(ds.Distro)
+				snapDir, err = SnapshotWSLOpenCode(ds.Distro)
+				if err == nil {
+					r, err = newOpenCodeReader(filepath.Join(snapDir, "opencode.db"))
+				}
 			}
-			r, err := newMiMoReader(filepath.Join(snapDir, "mimocode.db"))
 			if err != nil {
-				cleanupDir(snapDir)
+				if snapDir != "" {
+					cleanupDir(snapDir)
+				}
 				fmt.Fprintf(os.Stderr, "devinmonitor: skip %s: %v\n", ds.Label, err)
 				continue
 			}
 			sources = append(sources, SourceRef{Label: ds.Label, Reader: r})
 			cleanups = append(cleanups, snapDir)
-			tracks = append(tracks, wslTrackInit{ds.Label, ds.Distro, snapDir, mt, sz, true})
+			if isMiMo {
+				tracks = append(tracks, wslTrackInit{ds.Label, ds.Distro, snapDir, mt, sz, "mimo"})
+			} else {
+				tracks = append(tracks, wslTrackInit{ds.Label, ds.Distro, snapDir, mt, sz, "opencode"})
+			}
 		}
 	}
 
@@ -187,9 +207,12 @@ func OpenWith(opts OpenOptions) (Reader, error) {
 		m.AddCleanup(d)
 	}
 	for _, t := range tracks {
-		if t.isMiMo {
+		switch t.family {
+		case "mimo":
 			m.trackWSLMiMoFP(t.label, t.distro, t.snapDir, t.mt, t.sz)
-		} else {
+		case "opencode":
+			m.trackWSLOpenCodeFP(t.label, t.distro, t.snapDir, t.mt, t.sz)
+		default:
 			m.trackWSLFP(t.label, t.distro, t.snapDir, t.mt, t.sz)
 		}
 	}

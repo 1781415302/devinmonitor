@@ -184,8 +184,10 @@ DevinMonitor 从 Devin CLI 的数据目录读取 `sessions.db`：
 |------|----------|
 | `local`（Devin） | 平台默认 `devin/cli/sessions.db` |
 | `mimo`（MiMoCode） | `~/.local/share/mimocode/mimocode.db` |
-| `wsl:<发行版>` | 各 WSL 内 `~/.local/share/devin/cli/sessions.db` |
-| `wsl-mimo:<发行版>` | 各 WSL 内 `~/.local/share/mimocode/mimocode.db` |
+| `opencode`（OpenCode） | `~/.local/share/opencode/opencode.db` |
+| `wsl:<发行版>` | 各 WSL 内 Devin `sessions.db` |
+| `wsl-mimo:<发行版>` | 各 WSL 内 MiMo `mimocode.db` |
+| `wsl-opencode:<发行版>` | 各 WSL 内 OpenCode `opencode.db` |
 
 有就合并，没有就跳过；可用 `--no-wsl` / `--no-mimo` / `--wsl <名>` 收窄。
 

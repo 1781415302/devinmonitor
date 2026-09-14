@@ -195,8 +195,10 @@ supported AI stores:
 |--------|-------------|
 | `local` (Devin) | platform `devin/cli/sessions.db` |
 | `mimo` (MiMoCode) | `~/.local/share/mimocode/mimocode.db` |
-| `wsl:<distro>` | `~/.local/share/devin/cli/sessions.db` inside each WSL |
-| `wsl-mimo:<distro>` | `~/.local/share/mimocode/mimocode.db` inside each WSL |
+| `opencode` (OpenCode) | `~/.local/share/opencode/opencode.db` |
+| `wsl:<distro>` | Devin `sessions.db` inside each WSL |
+| `wsl-mimo:<distro>` | MiMo `mimocode.db` inside each WSL |
+| `wsl-opencode:<distro>` | OpenCode `opencode.db` inside each WSL |
 
 Found stores are merged; missing ones are skipped. Narrow with
 `--no-wsl` / `--no-mimo` / `--wsl <name>`.
