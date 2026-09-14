@@ -761,6 +761,18 @@ footer.foot {
     <div class="source-strip" id="sources"><span class="empty">加载数据源…</span></div>
   </header>
 
+  <div class="filter-bar" id="sessionFilters">
+    <div class="filter-row">
+      <span class="filter-label">服务商</span>
+      <div class="sec-tools" id="providerFilter" role="group" aria-label="按服务商筛选"></div>
+    </div>
+    <div class="filter-row">
+      <span class="filter-label">实例</span>
+      <div class="sec-tools" id="sourceFilter" role="group" aria-label="按实例筛选"></div>
+    </div>
+    <div class="filter-row filter-count" id="filterCount"></div>
+  </div>
+
   <div class="metrics" id="kpis" aria-live="polite"></div>
 
   <section class="block">
@@ -795,17 +807,6 @@ footer.foot {
   <section class="block">
     <div class="sec">
       <h2>会话</h2>
-    </div>
-    <div class="filter-bar" id="sessionFilters">
-      <div class="filter-row">
-        <span class="filter-label">服务商</span>
-        <div class="sec-tools" id="providerFilter" role="group" aria-label="按服务商筛选"></div>
-      </div>
-      <div class="filter-row">
-        <span class="filter-label">实例</span>
-        <div class="sec-tools" id="sourceFilter" role="group" aria-label="按实例筛选"></div>
-      </div>
-      <div class="filter-row filter-count" id="filterCount"></div>
     </div>
     <div class="panel panel-scroll">
       <table id="sessions">
@@ -854,6 +855,7 @@ es.onerror = function () {
 var activeProvider = 'all';
 var activeSource = 'all';
 var lastSessions = [];
+var lastData = null;
 
 function fmtTok(n) {
   n = n || 0;
@@ -1001,9 +1003,123 @@ function renderFilters(sessions) {
     '显示 ' + n + ' / ' + sessions.length + ' 个会话';
 }
 
-function renderSessions(sessions) {
+function render(d) {
+  lastData = d;
+  document.getElementById('updated').textContent =
+    new Date(d.updated || Date.now()).toLocaleTimeString();
+  lastSessions = d.sessions || [];
+  renderFilters(lastSessions);
+  renderAll();
+}
+
+function renderAll() {
+  if (!lastData) return;
+  var d = lastData;
+  var list = lastSessions.filter(matchesFilters);
+
+  // KPIs from filtered sessions
+  var req = 0, inn = 0, out = 0, cache = 0, cost = 0;
+  list.forEach(function (s) {
+    req += s.Requests || 0;
+    inn += s.InputTok || 0;
+    out += s.OutputTok || 0;
+    cache += s.CacheRead || 0;
+    if (!s.IsFree) cost += s.Cost || 0;
+  });
+  var totalTok = inn + out + cache;
+  var nSrc = {};
+  list.forEach(function (s) { nSrc[instanceOf(s.Source)] = true; });
+  var nSrcCount = Object.keys(nSrc).length;
+  var kpis = [
+    ['会话', list.length, ''],
+    ['请求', req, ''],
+    ['输入', fmtTok(inn), ''],
+    ['输出', fmtTok(out), ''],
+    ['缓存读', fmtTok(cache), 'muted'],
+    ['总 Token', fmtTok(totalTok), 'accent'],
+    ['成本', cost > 0 ? '$' + cost.toFixed(2) : 'free', 'accent'],
+    ['数据源', nSrcCount, 'muted']
+  ];
+  var kg = document.getElementById('kpis');
+  kg.innerHTML = '';
+  kpis.forEach(function (item) {
+    var el = document.createElement('div');
+    el.className = 'metric';
+    el.innerHTML = '<div class="k">' + item[0] + '</div><div class="v ' + (item[2] || '') + '">' + item[1] + '</div>';
+    kg.appendChild(el);
+  });
+
+  renderSources(d.sources || []);
+
+  // Token stack from filtered sessions
+  var sum = inn + out + cache || 1;
+  document.getElementById('stackBar').innerHTML =
+    '<span class="in" style="width:' + (inn / sum * 100) + '%"></span>' +
+    '<span class="out" style="width:' + (out / sum * 100) + '%"></span>' +
+    '<span class="cache" style="width:' + (cache / sum * 100) + '%"></span>';
+  document.getElementById('stackLegend').innerHTML =
+    '<span class="in"><i></i>输入<span class="val">' + fmtTok(inn) + '</span></span>' +
+    '<span class="out"><i></i>输出<span class="val">' + fmtTok(out) + '</span></span>' +
+    '<span class="cache"><i></i>缓存读<span class="val">' + fmtTok(cache) + '</span></span>';
+
+  // Models re-aggregated from filtered sessions (keep API t/s when name matches)
+  var apiModels = {};
+  (d.models || []).forEach(function (m) { apiModels[m.name] = m; });
+  var agg = {};
+  list.forEach(function (s) {
+    var name = s.Model || 'unknown';
+    var a = agg[name];
+    if (!a) {
+      a = agg[name] = {
+        name: name, sessions: 0, requests: 0,
+        inputTokens: 0, outputTokens: 0, cacheRead: 0, totalTokens: 0,
+        cost: 0, isFree: true, tokPerSec: 0
+      };
+    }
+    a.sessions++;
+    a.requests += s.Requests || 0;
+    a.inputTokens += s.InputTok || 0;
+    a.outputTokens += s.OutputTok || 0;
+    a.cacheRead += s.CacheRead || 0;
+    a.totalTokens = a.inputTokens + a.outputTokens + a.cacheRead;
+    if (s.IsFree === false && s.Cost) {
+      a.cost += s.Cost;
+      a.isFree = false;
+    }
+    if (apiModels[name]) a.tokPerSec = apiModels[name].tokPerSec || 0;
+  });
+  var models = Object.keys(agg).map(function (k) { return agg[k]; })
+    .sort(function (a, b) { return b.totalTokens - a.totalTokens; });
+  var mMax = Math.max.apply(null, models.map(function (m) { return m.totalTokens || 0; }).concat([1]));
+  var mtb = document.querySelector('#models tbody');
+  if (!models.length) {
+    mtb.innerHTML = '<tr><td colspan="10" class="empty">无数据</td></tr>';
+  } else {
+    mtb.innerHTML = models.map(function (m) {
+      var pct = Math.round(((m.totalTokens || 0) / mMax) * 100);
+      var costStr = m.isFree || !m.cost ? 'free' : '$' + (m.cost || 0).toFixed(2);
+      var speed = m.tokPerSec > 0 ? Math.round(m.tokPerSec) : '—';
+      return '<tr>' +
+        '<td class="mono">' + esc(m.name) + '</td>' +
+        '<td class="num">' + (m.sessions || 0) + '</td>' +
+        '<td class="num">' + (m.requests || 0) + '</td>' +
+        '<td class="num">' + fmtTok(m.inputTokens) + '</td>' +
+        '<td class="num">' + fmtTok(m.outputTokens) + '</td>' +
+        '<td class="num">' + fmtTok(m.cacheRead) + '</td>' +
+        '<td class="num">' + fmtTok(m.totalTokens) + '</td>' +
+        '<td class="num">' + speed + '</td>' +
+        '<td class="num">' + costStr + '</td>' +
+        '<td><div class="share"><div class="share-track"><div class="share-fill' + (pct > 60 ? ' is-accent' : '') + '" style="width:' + pct + '%"></div></div><span class="share-pct">' + pct + '%</span></div></td>' +
+        '</tr>';
+    }).join('');
+  }
+
+  renderSessions(list);
+  renderAlerts(list);
+}
+
+function renderSessions(filtered) {
   var tb = document.querySelector('#sessions tbody');
-  var filtered = sessions.filter(matchesFilters);
   if (!filtered.length) {
     tb.innerHTML = '<tr><td colspan="12" class="empty">无会话</td></tr>';
     return;
@@ -1029,81 +1145,38 @@ function renderSessions(sessions) {
   }).join('');
 }
 
-function render(d) {
-  document.getElementById('updated').textContent =
-    new Date(d.updated || Date.now()).toLocaleTimeString();
+function renderAlerts(filtered) {
+  var al = document.getElementById('alerts');
+  var alerts = (lastData && lastData.alerts) || [];
+  if (!alerts.length) {
+    al.innerHTML = '<span class="empty">无</span>';
+    return;
+  }
+  var allIds = (lastSessions || []).map(function (s) { return s.ID; });
+  var visibleIds = {};
+  filtered.forEach(function (s) { visibleIds[s.ID] = true; });
 
-  var u = d.usage || {};
-  var s = d.summary || {};
-  var nSrc = (d.sources || []).length;
-  var kpis = [
-    ['会话', s.totalSessions || 0, ''],
-    ['请求', u.requests || 0, ''],
-    ['输入', fmtTok(u.inputTokens), ''],
-    ['输出', fmtTok(u.outputTokens), ''],
-    ['缓存读', fmtTok(u.cacheRead), 'muted'],
-    ['总 Token', fmtTok(u.totalTokens), 'accent'],
-    ['成本', s.totalCost > 0 ? '$' + s.totalCost.toFixed(2) : 'free', 'accent'],
-    ['数据源', nSrc, 'muted']
-  ];
-  var kg = document.getElementById('kpis');
-  kg.innerHTML = '';
-  kpis.forEach(function (item) {
-    var el = document.createElement('div');
-    el.className = 'metric';
-    el.innerHTML = '<div class="k">' + item[0] + '</div><div class="v ' + (item[2] || '') + '">' + item[1] + '</div>';
-    kg.appendChild(el);
+  var shown = alerts.filter(function (a) {
+    // JSON keys are lowercase (severity/message)
+    var msg = a.message || a.Message || '';
+    var mentions = null;
+    for (var i = 0; i < allIds.length; i++) {
+      if (allIds[i] && msg.indexOf(allIds[i]) >= 0) { mentions = allIds[i]; break; }
+    }
+    if (mentions) return !!visibleIds[mentions];
+    // Budget / global alerts: hide when a strict filter is active
+    if (activeProvider === 'all' && activeSource === 'all') return true;
+    return false;
   });
 
-  renderSources(d.sources || []);
-
-  var inn = u.inputTokens || 0;
-  var out = u.outputTokens || 0;
-  var cache = u.cacheRead || 0;
-  var sum = inn + out + cache || 1;
-  document.getElementById('stackBar').innerHTML =
-    '<span class="in" style="width:' + (inn / sum * 100) + '%"></span>' +
-    '<span class="out" style="width:' + (out / sum * 100) + '%"></span>' +
-    '<span class="cache" style="width:' + (cache / sum * 100) + '%"></span>';
-  document.getElementById('stackLegend').innerHTML =
-    '<span class="in"><i></i>输入<span class="val">' + fmtTok(inn) + '</span></span>' +
-    '<span class="out"><i></i>输出<span class="val">' + fmtTok(out) + '</span></span>' +
-    '<span class="cache"><i></i>缓存读<span class="val">' + fmtTok(cache) + '</span></span>';
-
-  var models = d.models || [];
-  var mMax = Math.max.apply(null, models.map(function (m) { return m.totalTokens || 0; }).concat([1]));
-  var mtb = document.querySelector('#models tbody');
-  if (!models.length) {
-    mtb.innerHTML = '<tr><td colspan="10" class="empty">无数据</td></tr>';
-  } else {
-    mtb.innerHTML = models.map(function (m) {
-      var pct = Math.round(((m.totalTokens || 0) / mMax) * 100);
-      var cost = m.isFree || !m.cost ? 'free' : '$' + (m.cost || 0).toFixed(2);
-      var speed = m.tokPerSec > 0 ? Math.round(m.tokPerSec) : '—';
-      return '<tr>' +
-        '<td class="mono">' + esc(m.name) + '</td>' +
-        '<td class="num">' + (m.sessions || 0) + '</td>' +
-        '<td class="num">' + (m.requests || 0) + '</td>' +
-        '<td class="num">' + fmtTok(m.inputTokens) + '</td>' +
-        '<td class="num">' + fmtTok(m.outputTokens) + '</td>' +
-        '<td class="num">' + fmtTok(m.cacheRead) + '</td>' +
-        '<td class="num">' + fmtTok(m.totalTokens) + '</td>' +
-        '<td class="num">' + speed + '</td>' +
-        '<td class="num">' + cost + '</td>' +
-        '<td><div class="share"><div class="share-track"><div class="share-fill' + (pct > 60 ? ' is-accent' : '') + '" style="width:' + pct + '%"></div></div><span class="share-pct">' + pct + '%</span></div></td>' +
-        '</tr>';
-    }).join('');
+  if (!shown.length) {
+    al.innerHTML = '<span class="empty">无（当前筛选下）</span>';
+    return;
   }
-
-  lastSessions = d.sessions || [];
-  renderFilters(lastSessions);
-  renderSessions(lastSessions);
-
-  var al = document.getElementById('alerts');
-  var alerts = d.alerts || [];
-  if (!alerts.length) al.innerHTML = '<span class="empty">无</span>';
-  else al.innerHTML = '<ul>' + alerts.map(function (a) {
-    return '<li>[' + esc(a.Severity) + '] ' + esc(a.Message) + '</li>';
+  al.innerHTML = '<ul>' + shown.map(function (a) {
+    var sev = a.severity || a.Severity || 'info';
+    var msg = a.message || a.Message || '';
+    return '<li>[' + esc(sev) + '] ' + esc(msg) + '</li>';
   }).join('') + '</ul>';
 }
 </script>
