@@ -209,6 +209,14 @@ func openReader() reader.Reader {
 	return r
 }
 
+// fusionLabel appends "+N" when a session used more than one model.
+func fusionLabel(primary string, models []string) string {
+	if len(models) <= 1 {
+		return primary
+	}
+	return fmt.Sprintf("%s +%d", primary, len(models)-1)
+}
+
 // ---- live ----
 
 func cmdLive() *cobra.Command {
@@ -297,7 +305,7 @@ func cmdSessions() *cobra.Command {
 					t.Row(
 						row.ID,
 						row.Title,
-						row.Model,
+						fusionLabel(row.Model, row.Models),
 						row.Mode,
 						row.Project,
 						subs,
@@ -329,7 +337,7 @@ func cmdSessions() *cobra.Command {
 					t.Row(
 						row.ID,
 						row.Title,
-						row.Model,
+						fusionLabel(row.Model, row.Models),
 						row.Project,
 						fmt.Sprintf("%d", row.Requests),
 						report.FormatTok(row.InputTok),
@@ -368,7 +376,48 @@ func cmdSession() *cobra.Command {
 				fmt.Printf("%s: %s\n", i18n.T("common.source"), s.Source)
 			}
 			fmt.Printf("%s: %s\n", i18n.T("common.title"), s.Title)
-			fmt.Printf("%s: %s\n", i18n.T("common.model"), modelName)
+			if len(s.ModelsUsed) > 1 {
+				fmt.Printf("%s: %s  [%s]\n", i18n.T("common.model"), modelName,
+					strings.Join(s.ModelsUsed, ", "))
+			} else {
+				fmt.Printf("%s: %s\n", i18n.T("common.model"), modelName)
+			}
+			// Per-model token breakdown (fusion / multi-model sessions).
+			if len(s.ModelsUsed) > 1 {
+				type mstat struct {
+					req                 int
+					in, out, cr, cw     int64
+				}
+				by := map[string]*mstat{}
+				for _, m := range s.Messages {
+					if m.Role != "assistant" || m.GenerationModel == "" {
+						continue
+					}
+					st := by[m.GenerationModel]
+					if st == nil {
+						st = &mstat{}
+						by[m.GenerationModel] = st
+					}
+					st.req++
+					if m.Metrics != nil {
+						st.in += m.Metrics.InputTokens
+						st.out += m.Metrics.OutputTokens
+						st.cr += m.Metrics.CacheReadTokens
+						st.cw += m.Metrics.CacheWriteTokens
+					}
+				}
+				fmt.Printf("\n%s:\n", "模型明细")
+				for _, name := range s.ModelsUsed {
+					st := by[name]
+					if st == nil {
+						continue
+					}
+					fmt.Printf("  %-28s req=%d  %s / %s / %s / %s\n",
+						name, st.req,
+						report.FormatTok(st.in), report.FormatTok(st.out),
+						report.FormatTok(st.cr), report.FormatTok(st.cw))
+				}
+			}
 			fmt.Printf("%s: %s\n", i18n.T("common.mode"), s.AgentMode)
 			fmt.Printf("%s: %s\n", i18n.T("common.project"), s.WorkingDir)
 			fmt.Printf("%s: %d\n", i18n.T("common.requests"), s.AssistantCount)

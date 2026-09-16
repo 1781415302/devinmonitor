@@ -5,6 +5,7 @@ import (
 	"path/filepath"
 	"sort"
 	"strings"
+	"time"
 
 	"github.com/garywhat/devinmonitor/internal/model"
 )
@@ -37,7 +38,13 @@ type wslTrack struct {
 	mtime   int64
 	size    int64
 	family  string
+	// lastStat throttles expensive wsl.exe probes.
+	lastStat time.Time
 }
+
+// wslStatInterval is how often Refresh re-probes WSL DB mtimes.
+// Spawning wsl.exe is costly; dashboards poll far more frequently.
+const wslStatInterval = 20 * time.Second
 
 // trackWSLFP records a WSL Devin source with a known upstream fingerprint.
 func (m *MultiReader) trackWSLFP(label, distro, snapDir string, mt, sz int64) {
@@ -65,8 +72,13 @@ func (m *MultiReader) Refresh() error {
 	if len(m.wsl) == 0 {
 		return nil
 	}
+	now := time.Now()
 	for i := range m.wsl {
 		t := &m.wsl[i]
+		// Throttle wsl.exe probes — keep using the current snapshot in between.
+		if !t.lastStat.IsZero() && now.Sub(t.lastStat) < wslStatInterval {
+			continue
+		}
 		var mt, sz int64
 		var ok bool
 		switch t.family {
@@ -77,6 +89,7 @@ func (m *MultiReader) Refresh() error {
 		default:
 			mt, sz, ok = WSLDBStat(t.distro)
 		}
+		t.lastStat = now
 		if !ok {
 			continue
 		}
@@ -315,19 +328,27 @@ func (m *MultiReader) Session(id string) (*model.Session, error) {
 	}
 }
 
+// sessionCounter is an optional cheap session-count capability.
+type sessionCounter interface {
+	SessionCount() (int, error)
+}
+
 // SourcesSummary describes opened sources for status/debug output.
+// Uses SessionCount when available — never loads full session graphs.
 func (m *MultiReader) SourcesSummary() []SourceSummary {
 	out := make([]SourceSummary, 0, len(m.sources))
 	for _, s := range m.sources {
 		n := 0
-		if ss, err := s.Reader.Sessions(); err == nil {
-			n = len(ss)
+		if c, ok := s.Reader.(sessionCounter); ok {
+			if cnt, err := c.SessionCount(); err == nil {
+				n = cnt
+			}
 		}
 		out = append(out, SourceSummary{
-			Label:      s.Label,
-			Path:       s.Reader.DBPath(),
-			Schema:     s.Reader.SchemaVersion(),
-			Sessions:   n,
+			Label:    s.Label,
+			Path:     s.Reader.DBPath(),
+			Schema:   s.Reader.SchemaVersion(),
+			Sessions: n,
 		})
 	}
 	return out

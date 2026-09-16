@@ -46,6 +46,11 @@ type webState struct {
 	subscribers map[chan string]bool
 	r           reader.Reader
 	dataDir     string
+
+	// Fingerprint cache: skip SQLite re-reads when source DBs are unchanged.
+	loadMu   sync.Mutex
+	cached   []model.Session
+	cacheKey string
 }
 
 func runWebServer(cmd *cobra.Command, port int, openBrowser bool) {
@@ -103,12 +108,66 @@ func runWebServer(cmd *cobra.Command, port int, openBrowser bool) {
 	fmt.Fprintf(os.Stderr, "Web server stopped.\n")
 }
 
-// loadSessions refreshes secondary sources (WSL snapshots) then reads all sessions.
+// sourceFingerprint identifies the current set of on-disk session DBs.
+func (st *webState) sourceFingerprint() string {
+	var b strings.Builder
+	if mr, ok := st.r.(*reader.MultiReader); ok {
+		for _, s := range mr.SourcesSummary() {
+			fi, err := os.Stat(s.Path)
+			if err != nil {
+				fmt.Fprintf(&b, "%s|missing;", s.Label)
+				continue
+			}
+			fmt.Fprintf(&b, "%s|%d|%d;", s.Label, fi.ModTime().UnixNano(), fi.Size())
+		}
+		return b.String()
+	}
+	p := st.r.DBPath()
+	if fi, err := os.Stat(p); err == nil {
+		fmt.Fprintf(&b, "%s|%d|%d", p, fi.ModTime().UnixNano(), fi.Size())
+	}
+	return b.String()
+}
+
+// stripHeavySessionData drops message bodies and tool arguments after
+// aggregation. Web dashboards only need metrics/model metadata.
+func stripHeavySessionData(ss []model.Session) {
+	for i := range ss {
+		for j := range ss[i].Messages {
+			ss[i].Messages[j].Content = ""
+			for k := range ss[i].Messages[j].ToolCalls {
+				ss[i].Messages[j].ToolCalls[k].Arguments = ""
+			}
+		}
+		for j := range ss[i].SubAgentCalls {
+			ss[i].SubAgentCalls[j].Task = ""
+		}
+	}
+}
+
+// loadSessions refreshes WSL sources, then returns cached sessions when
+// no source DB changed. Concurrent callers share one in-flight load.
 func (st *webState) loadSessions() ([]model.Session, error) {
+	st.loadMu.Lock()
+	defer st.loadMu.Unlock()
+
 	if ref, ok := st.r.(reader.Refresher); ok {
 		_ = ref.Refresh()
 	}
-	return st.r.Sessions()
+	key := st.sourceFingerprint()
+	if st.cacheKey == key && st.cached != nil {
+		return st.cached, nil
+	}
+	ss, err := st.r.Sessions()
+	if err != nil {
+		return nil, err
+	}
+	stripHeavySessionData(ss)
+	// Return transcript pages to the OS after dropping message bodies.
+	runtime.GC()
+	st.cached = ss
+	st.cacheKey = key
+	return ss, nil
 }
 
 func (st *webState) pollLoop() {
@@ -1206,12 +1265,21 @@ function renderSessions(filtered) {
     var src = instanceOf(x.Source);
     var p = providerOf(src);
     var c = srcClass(src);
+    var models = x.Models || [];
+    var modelLabel = x.Model || '';
+    var modelTitle = modelLabel;
+    if (models.length > 1) {
+      modelLabel = esc(x.Model) + ' <span class="tag">+' + (models.length - 1) + '</span>';
+      modelTitle = models.join(', ');
+    } else {
+      modelLabel = esc(modelLabel);
+    }
     return '<tr>' +
       '<td class="mono">' + esc(x.ID) + '</td>' +
       '<td><span class="tag ' + c + '">' + esc(providerLabel(p)) + '</span></td>' +
       '<td class="mono">' + esc(instanceLabel(src)) + '</td>' +
       '<td class="trunc" title="' + esc(x.Title) + '">' + esc(x.Title) + '</td>' +
-      '<td class="mono">' + esc(x.Model) + '</td>' +
+      '<td class="mono" title="' + esc(modelTitle) + '">' + modelLabel + '</td>' +
       '<td class="trunc" title="' + esc(x.Project) + '">' + esc(x.Project) + '</td>' +
       '<td class="num">' + (x.Requests || 0) + '</td>' +
       '<td class="num">' + fmtTok(x.InputTok) + '</td>' +

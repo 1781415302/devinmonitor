@@ -150,6 +150,13 @@ func (r *mimoReader) SchemaVersion() int { return 1 }
 func (r *mimoReader) DBPath() string     { return r.path }
 func (r *mimoReader) Close() error       { return r.db.Close() }
 
+// SessionCount returns the number of sessions without loading messages.
+func (r *mimoReader) SessionCount() (int, error) {
+	var n int
+	err := r.db.QueryRow(`SELECT COUNT(*) FROM session`).Scan(&n)
+	return n, err
+}
+
 // mimoMsg is the assistant/user message JSON stored in message.data.
 type mimoMsg struct {
 	Role       string `json:"role"`

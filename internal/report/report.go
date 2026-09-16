@@ -51,7 +51,7 @@ func SessionCost(s *model.Session) (cost float64, estimated bool) {
 	if s.CreditCost > 0 || s.ACUCost > 0 {
 		return s.CreditCost + s.ACUCost, false
 	}
-	p := model.LookupPricing(s.Model)
+	p := model.LookupPricing(s.EffectiveModel())
 	return model.EstimateCost(p, s.InputTokens, s.OutputTokens, s.CacheRead, s.CacheWrite), p.Free || p.InputPerM == 0 && p.OutputPerM == 0
 }
 
@@ -62,6 +62,7 @@ type SessionRow struct {
 	Source       string
 	Title        string
 	Model        string
+	Models       []string // all models used (fusion sessions have >1)
 	Mode         string
 	Project      string
 	Requests     int
@@ -82,12 +83,18 @@ func BuildSessionRows(ss []model.Session) []SessionRow {
 	for _, s := range ss {
 		dur := s.LastActivityAt.Sub(s.CreatedAt)
 		cost, est := SessionCost(&s)
-		p := model.LookupPricing(s.Model)
+		displayModel := s.EffectiveModel()
+		models := s.ModelsUsed
+		if len(models) == 0 && displayModel != "" {
+			models = []string{displayModel}
+		}
+		p := model.LookupPricing(displayModel)
 		rows = append(rows, SessionRow{
 			ID:            s.DisplayID(),
 			Source:        s.Source,
 			Title:         s.Title,
-			Model:         s.Model,
+			Model:         displayModel,
+			Models:        models,
 			Mode:          s.AgentMode,
 			Project:       baseProject(s.WorkingDir),
 			Requests:      s.AssistantCount,

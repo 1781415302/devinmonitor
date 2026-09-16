@@ -229,6 +229,11 @@ func (r *v1Reader) loadMessages(sessionID string) ([]model.Message, error) {
 				m.Metrics = decodeMetrics(cm.Metadata.Metrics)
 			}
 		}
+		// Aggregation never reads assistant message bodies; drop them early
+		// so large transcripts don't accumulate in memory.
+		if m.Role == "assistant" {
+			m.Content = ""
+		}
 		for _, tc := range cm.ToolCalls {
 			name := tc.Name
 			args := tc.Arguments
@@ -288,12 +293,15 @@ func aggregate(s *model.Session) {
 	completions := map[string]completionInfo{} // agent_id → completion
 	toolCallIDToAgentID := map[string]string{}
 
-	for _, m := range s.Messages {
+	for i := range s.Messages {
+		m := &s.Messages[i]
 		// Tool result messages contain "Background subagent started with agent_id=XXX".
 		if m.Role == "tool" {
 			if aid := extractAgentID(m.Content); aid != "" && m.ToolCallID != "" {
 				toolCallIDToAgentID[m.ToolCallID] = aid
 			}
+			// Body already consumed; free it before the assistant pass.
+			m.Content = ""
 		}
 		// System messages may contain <subagent_completion_notification>.
 		if m.Role == "system" && strings.Contains(m.Content, "<subagent_completion_notification>") {
@@ -303,6 +311,7 @@ func aggregate(s *model.Session) {
 					outputLen: len(m.Content),
 				}
 			}
+			m.Content = ""
 		}
 	}
 
@@ -311,11 +320,16 @@ func aggregate(s *model.Session) {
 	// (Devin stores each assistant message twice: streaming + final).
 	seenSubAgent := map[string]bool{}
 	seenReadSubAgent := map[string]bool{}
+	seenModel := map[string]bool{}
 	for _, m := range s.Messages {
 		if m.Role != "assistant" {
 			continue
 		}
 		s.AssistantCount++
+		if m.GenerationModel != "" && !seenModel[m.GenerationModel] {
+			seenModel[m.GenerationModel] = true
+			s.ModelsUsed = append(s.ModelsUsed, m.GenerationModel)
+		}
 		if m.Metrics != nil {
 			s.InputTokens += m.Metrics.InputTokens
 			s.OutputTokens += m.Metrics.OutputTokens
@@ -357,6 +371,11 @@ func aggregate(s *model.Session) {
 		if m.GenerationModel != "" {
 			s.LatestModel = m.GenerationModel
 		}
+	}
+	// Some Devin/WSL records leave sessions.model empty while each request
+	// still carries generation_model — backfill so reports/web don't show unknown.
+	if s.Model == "" && s.LatestModel != "" {
+		s.Model = s.LatestModel
 	}
 }
 

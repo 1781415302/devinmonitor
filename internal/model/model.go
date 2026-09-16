@@ -37,6 +37,10 @@ type Session struct {
 	// message. More accurate than the session-level Model field (which is
 	// set at creation time and doesn't update when the user switches models).
 	LatestModel string
+	// ModelsUsed lists every distinct generation_model seen in assistant
+	// messages, in first-appearance order. Fusion/multi-model sessions
+	// have more than one entry.
+	ModelsUsed []string
 	// SubAgentCalls contains all run_subagent invocations in this session.
 	SubAgentCalls []SubAgentCall
 	// ReadSubAgentCalls counts how many times the main agent called read_subagent
@@ -67,6 +71,16 @@ func (s Session) DisplayID() string {
 		return s.Source[:i] + ":" + s.ID
 	}
 	return s.Source + ":" + s.ID
+}
+
+// EffectiveModel prefers LatestModel (from message metadata) and falls
+// back to the session-level Model. Some backends leave sessions.model
+// empty while still recording generation_model on each request.
+func (s Session) EffectiveModel() string {
+	if s.LatestModel != "" {
+		return s.LatestModel
+	}
+	return s.Model
 }
 
 // Message is a single chat message node.
