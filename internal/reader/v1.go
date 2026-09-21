@@ -249,7 +249,36 @@ func (r *v1Reader) loadMessages(sessionID string) ([]model.Message, error) {
 		}
 		out = append(out, m)
 	}
-	return out, rows.Err()
+	return dedupeAssistantByRequestID(out), rows.Err()
+}
+
+// dedupeAssistantByRequestID collapses Devin's streaming+final duplicate
+// assistant rows so token metrics are not double-counted. Keeps the last
+// copy (final response) when request_id matches.
+func dedupeAssistantByRequestID(msgs []model.Message) []model.Message {
+	if len(msgs) == 0 {
+		return msgs
+	}
+	last := map[string]int{}
+	keep := make([]bool, len(msgs))
+	for i := range msgs {
+		if msgs[i].Role != "assistant" || msgs[i].RequestID == "" {
+			keep[i] = true
+			continue
+		}
+		if j, ok := last[msgs[i].RequestID]; ok {
+			keep[j] = false
+		}
+		last[msgs[i].RequestID] = i
+		keep[i] = true
+	}
+	out := make([]model.Message, 0, len(msgs))
+	for i := range msgs {
+		if keep[i] {
+			out = append(out, msgs[i])
+		}
+	}
+	return out
 }
 
 func decodeMetrics(m *metrics) *model.Metrics {

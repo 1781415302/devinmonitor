@@ -57,12 +57,36 @@ func SessionCost(s *model.Session) (cost float64, estimated bool) {
 
 // ---- Sessions report ----
 
+// SessionModelStat is per-model usage inside one session (fusion/multi-model).
+type SessionModelStat struct {
+	Name       string `json:"name"`
+	Requests   int    `json:"requests"`
+	InputTok   int64  `json:"inputTokens"`
+	OutputTok  int64  `json:"outputTokens"`
+	CacheRead  int64  `json:"cacheRead"`
+	CacheWrite int64  `json:"cacheWrite"`
+}
+
+// DayModelStat is usage for one model on one calendar day (local time).
+// Date-range filters use these instead of whole-session totals.
+type DayModelStat struct {
+	Date       string `json:"date"`
+	Name       string `json:"name"`
+	Requests   int    `json:"requests"`
+	InputTok   int64  `json:"inputTokens"`
+	OutputTok  int64  `json:"outputTokens"`
+	CacheRead  int64  `json:"cacheRead"`
+	CacheWrite int64  `json:"cacheWrite"`
+}
+
 type SessionRow struct {
 	ID           string
 	Source       string
 	Title        string
 	Model        string
 	Models       []string // all models used (fusion sessions have >1)
+	ModelStats   []SessionModelStat
+	DayStats     []DayModelStat
 	Mode         string
 	Project      string
 	Requests     int
@@ -70,6 +94,7 @@ type SessionRow struct {
 	OutputTok    int64
 	CacheRead    int64
 	Duration     time.Duration
+	LastActivity time.Time
 	Cost         float64
 	CostEstimated bool
 	IsFree       bool
@@ -95,6 +120,8 @@ func BuildSessionRows(ss []model.Session) []SessionRow {
 			Title:         s.Title,
 			Model:         displayModel,
 			Models:        models,
+			ModelStats:    buildSessionModelStats(&s, displayModel),
+			DayStats:      buildSessionDayStats(&s),
 			Mode:          s.AgentMode,
 			Project:       baseProject(s.WorkingDir),
 			Requests:      s.AssistantCount,
@@ -102,6 +129,7 @@ func BuildSessionRows(ss []model.Session) []SessionRow {
 			OutputTok:     s.OutputTokens,
 			CacheRead:     s.CacheRead,
 			Duration:      dur,
+			LastActivity:  s.LastActivityAt,
 			Cost:          cost,
 			CostEstimated: est,
 			IsFree:        p.Free,
@@ -113,6 +141,93 @@ func BuildSessionRows(ss []model.Session) []SessionRow {
 		return rows[i].Requests > rows[j].Requests // by activity for now
 	})
 	return rows
+}
+
+func buildSessionModelStats(s *model.Session, fallback string) []SessionModelStat {
+	by := map[string]*SessionModelStat{}
+	var order []string
+	for _, m := range s.Messages {
+		if m.Role != "assistant" || m.GenerationModel == "" {
+			continue
+		}
+		st := by[m.GenerationModel]
+		if st == nil {
+			st = &SessionModelStat{Name: m.GenerationModel}
+			by[m.GenerationModel] = st
+			order = append(order, m.GenerationModel)
+		}
+		st.Requests++
+		if m.Metrics != nil {
+			st.InputTok += m.Metrics.InputTokens
+			st.OutputTok += m.Metrics.OutputTokens
+			st.CacheRead += m.Metrics.CacheReadTokens
+			st.CacheWrite += m.Metrics.CacheWriteTokens
+		}
+	}
+	if len(order) == 0 {
+		if fallback == "" {
+			return nil
+		}
+		return []SessionModelStat{{
+			Name:       fallback,
+			Requests:   s.AssistantCount,
+			InputTok:   s.InputTokens,
+			OutputTok:  s.OutputTokens,
+			CacheRead:  s.CacheRead,
+			CacheWrite: s.CacheWrite,
+		}}
+	}
+	out := make([]SessionModelStat, 0, len(order))
+	for _, n := range order {
+		out = append(out, *by[n])
+	}
+	return out
+}
+
+func buildSessionDayStats(s *model.Session) []DayModelStat {
+	type key struct{ day, model string }
+	by := map[key]*DayModelStat{}
+	var order []key
+	for _, m := range s.Messages {
+		if m.Role != "assistant" || m.Metrics == nil {
+			continue
+		}
+		day := m.CreatedAt.Local().Format("2006-01-02")
+		name := m.GenerationModel
+		if name == "" {
+			name = s.EffectiveModel()
+		}
+		if name == "" {
+			name = "unknown"
+		}
+		k := key{day, name}
+		st := by[k]
+		if st == nil {
+			st = &DayModelStat{Date: day, Name: name}
+			by[k] = st
+			order = append(order, k)
+		}
+		st.Requests++
+		st.InputTok += m.Metrics.InputTokens
+		st.OutputTok += m.Metrics.OutputTokens
+		st.CacheRead += m.Metrics.CacheReadTokens
+		st.CacheWrite += m.Metrics.CacheWriteTokens
+	}
+	if len(order) == 0 {
+		return nil
+	}
+	// Stable order: date asc, then model name.
+	sort.Slice(order, func(i, j int) bool {
+		if order[i].day != order[j].day {
+			return order[i].day < order[j].day
+		}
+		return order[i].model < order[j].model
+	})
+	out := make([]DayModelStat, 0, len(order))
+	for _, k := range order {
+		out = append(out, *by[k])
+	}
+	return out
 }
 
 func baseProject(dir string) string {

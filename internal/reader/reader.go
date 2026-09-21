@@ -105,6 +105,10 @@ func OpenWith(opts OpenOptions) (Reader, error) {
 		return openOne(opts.DataDir)
 	}
 
+	// Drop orphaned snapshots from prior killed processes so they don't
+	// pin hundreds of MB on C:.
+	PurgeStaleSnapshots(nil)
+
 	found := DiscoverSources(opts.WSLDistros, opts.IncludeWSL, opts.IncludeMiMo)
 	if len(found) == 0 {
 		return openOne("")
@@ -199,7 +203,9 @@ func OpenWith(opts OpenOptions) (Reader, error) {
 	if len(sources) == 0 {
 		return openOne("")
 	}
-	if len(sources) == 1 {
+	// Single local source needs no MultiReader; WSL snapshots always do
+	// so Close/Refresh can manage the stable temp dirs.
+	if len(sources) == 1 && len(cleanups) == 0 {
 		return sources[0].Reader, nil
 	}
 	m := NewMulti(sources...)

@@ -44,7 +44,8 @@ type wslTrack struct {
 
 // wslStatInterval is how often Refresh re-probes WSL DB mtimes.
 // Spawning wsl.exe is costly; dashboards poll far more frequently.
-const wslStatInterval = 20 * time.Second
+// 30s keeps live views fresh without thrashing disk when Devin is writing.
+const wslStatInterval = 30 * time.Second
 
 // trackWSLFP records a WSL Devin source with a known upstream fingerprint.
 func (m *MultiReader) trackWSLFP(label, distro, snapDir string, mt, sz int64) {
@@ -68,6 +69,8 @@ func (m *MultiReader) trackWSLOpenCodeFP(label, distro, snapDir string, mt, sz i
 }
 
 // Refresh re-snapshots WSL sources when the in-distro db changed.
+// Snapshots live in a stable per-distro temp dir and are overwritten in place
+// so refreshes never accumulate new copies on disk.
 func (m *MultiReader) Refresh() error {
 	if len(m.wsl) == 0 {
 		return nil
@@ -96,6 +99,16 @@ func (m *MultiReader) Refresh() error {
 		if mt == t.mtime && sz == t.size {
 			continue
 		}
+
+		// Release the SQLite handle before overwriting the snapshot files.
+		for j := range m.sources {
+			if m.sources[j].Label == t.label {
+				_ = m.sources[j].Reader.Close()
+				m.sources[j].Reader = nil
+				break
+			}
+		}
+
 		var newDir string
 		var err error
 		var r Reader
@@ -120,13 +133,11 @@ func (m *MultiReader) Refresh() error {
 			r, err = openOne(newDir)
 		}
 		if err != nil {
-			cleanupDir(newDir)
 			return fmt.Errorf("refresh %s open: %w", t.label, err)
 		}
 		swapped := false
 		for j := range m.sources {
 			if m.sources[j].Label == t.label {
-				_ = m.sources[j].Reader.Close()
 				m.sources[j].Reader = r
 				swapped = true
 				break
@@ -134,15 +145,10 @@ func (m *MultiReader) Refresh() error {
 		}
 		if !swapped {
 			_ = r.Close()
-			cleanupDir(newDir)
 			return fmt.Errorf("refresh %s: source disappeared", t.label)
 		}
-		oldDir := t.snapDir
 		t.snapDir = newDir
 		t.mtime, t.size = mt, sz
-		m.removeCleanup(oldDir)
-		cleanupDir(oldDir)
-		m.AddCleanup(newDir)
 	}
 	return nil
 }
@@ -183,10 +189,12 @@ func (m *MultiReader) Sources() []string {
 }
 
 func (m *MultiReader) SchemaVersion() int {
-	if len(m.sources) == 0 {
-		return 0
+	for _, s := range m.sources {
+		if s.Reader != nil {
+			return s.Reader.SchemaVersion()
+		}
 	}
-	return m.sources[0].Reader.SchemaVersion()
+	return 0
 }
 
 func (m *MultiReader) DBPath() string { return m.primaryPath }
@@ -194,6 +202,9 @@ func (m *MultiReader) DBPath() string { return m.primaryPath }
 func (m *MultiReader) Close() error {
 	var first error
 	for _, s := range m.sources {
+		if s.Reader == nil {
+			continue
+		}
 		if err := s.Reader.Close(); err != nil && first == nil {
 			first = err
 		}
@@ -211,6 +222,9 @@ func (m *MultiReader) Sessions() ([]model.Session, error) {
 	var out []model.Session
 	seen := map[string]int{} // bare ID -> count across sources
 	for _, src := range m.sources {
+		if src.Reader == nil {
+			continue
+		}
 		ss, err := src.Reader.Sessions()
 		if err != nil {
 			return nil, fmt.Errorf("%s: %w", src.Label, err)
@@ -338,6 +352,9 @@ type sessionCounter interface {
 func (m *MultiReader) SourcesSummary() []SourceSummary {
 	out := make([]SourceSummary, 0, len(m.sources))
 	for _, s := range m.sources {
+		if s.Reader == nil {
+			continue
+		}
 		n := 0
 		if c, ok := s.Reader.(sessionCounter); ok {
 			if cnt, err := c.SessionCount(); err == nil {

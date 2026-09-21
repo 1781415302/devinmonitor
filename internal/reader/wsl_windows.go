@@ -4,13 +4,31 @@ package reader
 
 import (
 	"bytes"
+	"context"
 	"fmt"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"strings"
+	"time"
 	"unicode/utf16"
 )
+
+// wsl timeouts keep the CLI/web responsive when WSL is slow or wedged.
+const (
+	wslListTimeout  = 20 * time.Second
+	wslProbeTimeout = 25 * time.Second
+	wslStatTimeout  = 25 * time.Second
+	// Snapshot copies a large sqlite file; allow a few minutes.
+	wslSnapTimeout = 3 * time.Minute
+)
+
+func wslCtx(parent context.Context, d time.Duration) (context.Context, context.CancelFunc) {
+	if parent == nil {
+		parent = context.Background()
+	}
+	return context.WithTimeout(parent, d)
+}
 
 // wslDevinDB is the in-distro path of Devin CLI's session store.
 const wslDevinDB = ".local/share/devin/cli/sessions.db"
@@ -37,7 +55,9 @@ func DetectWSLDistros(only []string) []string {
 	if _, err := exec.LookPath("wsl.exe"); err != nil {
 		return nil
 	}
-	raw, err := exec.Command("wsl.exe", "--list", "--quiet").Output()
+	ctx, cancel := wslCtx(nil, wslListTimeout)
+	defer cancel()
+	raw, err := exec.CommandContext(ctx, "wsl.exe", "--list", "--quiet").Output()
 	if err != nil {
 		return nil
 	}
@@ -135,7 +155,9 @@ exit 0
 	if err != nil {
 		return hits
 	}
-	out, err := exec.Command("wsl.exe", "-d", distro, "bash", wslSp).Output()
+	ctx, cancel := wslCtx(nil, wslProbeTimeout)
+	defer cancel()
+	out, err := exec.CommandContext(ctx, "wsl.exe", "-d", distro, "bash", wslSp).Output()
 	if err != nil {
 		return hits
 	}
@@ -162,7 +184,9 @@ func WSLStatFile(distro, relHome string) (mtime, size int64, ok bool) {
 	if err != nil {
 		return 0, 0, false
 	}
-	out, err := exec.Command("wsl.exe", "-d", distro, "bash", wslSp).Output()
+	ctx, cancel := wslCtx(nil, wslStatTimeout)
+	defer cancel()
+	out, err := exec.CommandContext(ctx, "wsl.exe", "-d", distro, "bash", wslSp).Output()
 	if err != nil {
 		return 0, 0, false
 	}
@@ -190,13 +214,12 @@ func WSLOpenCodeStat(distro string) (mtime, size int64, ok bool) {
 
 // snapshotWSLFile copies a $HOME-relative sqlite db (+wal/shm) into a temp dir.
 func snapshotWSLFile(distro, relHome, outName, tag string) (string, error) {
-	winDir, err := os.MkdirTemp("", "devinmonitor-"+tag+"-"+sanitizeFile(distro)+"-")
-	if err != nil {
+	winDir := stableSnapDir(tag, distro)
+	if err := os.MkdirAll(winDir, 0o755); err != nil {
 		return "", err
 	}
 	wslDir, err := winToWSLPath(winDir)
 	if err != nil {
-		os.RemoveAll(winDir)
 		return "", err
 	}
 	script := fmt.Sprintf(`#!/bin/bash
@@ -204,11 +227,13 @@ set -e
 src="$HOME/%s"
 dir='%s'
 mkdir -p "$dir"
-cp -f "$src" "$dir/%s"
-if [ -f "$src-wal" ]; then cp -f "$src-wal" "$dir/%s-wal"; fi
-if [ -f "$src-shm" ]; then cp -f "$src-shm" "$dir/%s-shm"; fi
+# Copy via temp + rename so a concurrent reader never sees a half-written db.
+cp -f "$src" "$dir/%s.tmp"
+mv -f "$dir/%s.tmp" "$dir/%s"
+if [ -f "$src-wal" ]; then cp -f "$src-wal" "$dir/%s-wal" 2>/dev/null || true; fi
+if [ -f "$src-shm" ]; then cp -f "$src-shm" "$dir/%s-shm" 2>/dev/null || true; fi
 echo OK
-`, relHome, wslDir, outName, outName, outName)
+`, relHome, wslDir, outName, outName, outName, outName, outName)
 	scriptPath := filepath.Join(winDir, "snap.sh")
 	if err := os.WriteFile(scriptPath, []byte(script), 0o755); err != nil {
 		os.RemoveAll(winDir)
@@ -219,20 +244,19 @@ echo OK
 		os.RemoveAll(winDir)
 		return "", err
 	}
-	cmd := exec.Command("wsl.exe", "-d", distro, "bash", wslScript)
+	ctx, cancel := wslCtx(nil, wslSnapTimeout)
+	defer cancel()
+	cmd := exec.CommandContext(ctx, "wsl.exe", "-d", distro, "bash", wslScript)
 	var stderr bytes.Buffer
 	cmd.Stderr = &stderr
 	out, err := cmd.Output()
 	if err != nil {
-		os.RemoveAll(winDir)
 		return "", fmt.Errorf("wsl %s snapshot %s: %v (%s)", tag, distro, err, strings.TrimSpace(stderr.String()))
 	}
 	if !strings.Contains(string(out), "OK") {
-		os.RemoveAll(winDir)
 		return "", fmt.Errorf("wsl %s snapshot %s: unexpected output %q", tag, distro, out)
 	}
 	if _, err := os.Stat(filepath.Join(winDir, outName)); err != nil {
-		os.RemoveAll(winDir)
 		return "", fmt.Errorf("wsl %s snapshot %s: %s missing", tag, distro, outName)
 	}
 	_ = os.Remove(scriptPath)
@@ -250,60 +274,10 @@ func SnapshotWSLOpenCode(distro string) (string, error) {
 }
 
 // SnapshotWSLDB copies sessions.db (+ -wal/-shm) from the distro into a
-// Windows temp dir and returns that directory. Avoids opening the live
-// WSL file over \\wsl.localhost (SQLITE_BUSY on 9p locks).
-//
-// A bash script file is used because wsl.exe mangles `$var` in inline
-// `bash -c` arguments (quotes/vars get eaten before bash runs).
+// stable Windows temp dir (reused across refreshes) and returns that directory.
+// Avoids opening the live WSL file over \\wsl.localhost (SQLITE_BUSY on 9p locks).
 func SnapshotWSLDB(distro string) (string, error) {
-	winDir, err := os.MkdirTemp("", "devinmonitor-wsl-"+sanitizeFile(distro)+"-")
-	if err != nil {
-		return "", err
-	}
-	wslDir, err := winToWSLPath(winDir)
-	if err != nil {
-		os.RemoveAll(winDir)
-		return "", err
-	}
-	script := fmt.Sprintf(`#!/bin/bash
-set -e
-src="$HOME/%s"
-dir='%s'
-mkdir -p "$dir"
-cp -f "$src" "$dir/sessions.db"
-if [ -f "$src-wal" ]; then cp -f "$src-wal" "$dir/sessions.db-wal"; fi
-if [ -f "$src-shm" ]; then cp -f "$src-shm" "$dir/sessions.db-shm"; fi
-echo OK
-`, wslDevinDB, wslDir)
-	scriptPath := filepath.Join(winDir, "snap.sh")
-	if err := os.WriteFile(scriptPath, []byte(script), 0o755); err != nil {
-		os.RemoveAll(winDir)
-		return "", err
-	}
-	wslScript, err := winToWSLPath(scriptPath)
-	if err != nil {
-		os.RemoveAll(winDir)
-		return "", err
-	}
-	cmd := exec.Command("wsl.exe", "-d", distro, "bash", wslScript)
-	var stderr bytes.Buffer
-	cmd.Stderr = &stderr
-	out, err := cmd.Output()
-	if err != nil {
-		os.RemoveAll(winDir)
-		return "", fmt.Errorf("wsl snapshot %s: %v (%s)", distro, err, strings.TrimSpace(stderr.String()))
-	}
-	if !strings.Contains(string(out), "OK") {
-		os.RemoveAll(winDir)
-		return "", fmt.Errorf("wsl snapshot %s: unexpected output %q", distro, out)
-	}
-	if _, err := os.Stat(filepath.Join(winDir, "sessions.db")); err != nil {
-		os.RemoveAll(winDir)
-		return "", fmt.Errorf("wsl snapshot %s: sessions.db missing after copy", distro)
-	}
-	// Drop the helper script so the dir only holds db files.
-	_ = os.Remove(scriptPath)
-	return winDir, nil
+	return snapshotWSLFile(distro, wslDevinDB, "sessions.db", "wsl")
 }
 
 // winToWSLPath maps C:\foo\bar -> /mnt/c/foo/bar
@@ -341,5 +315,36 @@ func sanitizeFile(s string) string {
 func cleanupDir(dir string) {
 	if dir != "" {
 		_ = os.RemoveAll(dir)
+	}
+}
+
+// stableSnapDir is the single reused snapshot location for one source.
+// Reusing a fixed path avoids leaking a new ~300MB copy on every refresh
+// when the process is killed without Close().
+func stableSnapDir(tag, distro string) string {
+	return filepath.Join(os.TempDir(), "devinmonitor-"+tag+"-"+sanitizeFile(distro))
+}
+
+// PurgeStaleSnapshots removes leftover devinmonitor-* temp dirs except those
+// in keep. Call on startup so killed processes don't pin C: space forever.
+func PurgeStaleSnapshots(keep map[string]bool) {
+	tmp := os.TempDir()
+	ents, err := os.ReadDir(tmp)
+	if err != nil {
+		return
+	}
+	for _, e := range ents {
+		if !e.IsDir() {
+			continue
+		}
+		name := e.Name()
+		if !strings.HasPrefix(name, "devinmonitor-") {
+			continue
+		}
+		full := filepath.Join(tmp, name)
+		if keep[full] {
+			continue
+		}
+		_ = os.RemoveAll(full)
 	}
 }

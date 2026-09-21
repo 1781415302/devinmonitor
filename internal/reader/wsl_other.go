@@ -50,3 +50,6 @@ func WSLStatFile(distro, relHome string) (mtime, size int64, ok bool) {
 }
 
 func cleanupDir(dir string) {}
+
+// PurgeStaleSnapshots is a no-op outside Windows (no WSL snapshot dirs).
+func PurgeStaleSnapshots(keep map[string]bool) {}

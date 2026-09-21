@@ -829,6 +829,10 @@ footer.foot {
       <span class="filter-label">实例</span>
       <div class="sec-tools" id="sourceFilter" role="group" aria-label="按实例筛选"></div>
     </div>
+    <div class="filter-row">
+      <span class="filter-label">时间</span>
+      <div class="sec-tools" id="rangeFilter" role="group" aria-label="按时间范围筛选"></div>
+    </div>
     <div class="filter-row filter-count" id="filterCount"></div>
   </div>
 
@@ -913,6 +917,7 @@ es.onerror = function () {
 
 var activeProvider = 'all';
 var activeSource = 'all';
+var activeRange = 'all'; // all | 1d | 7d | 30d
 var lastSessions = [];
 var lastData = null;
 
@@ -990,10 +995,73 @@ function renderSources(sources) {
   }).join('');
 }
 
+function rangeCutoff() {
+  if (activeRange === 'all') return 0;
+  var days = activeRange === '1d' ? 1 : (activeRange === '7d' ? 7 : 30);
+  var d = new Date();
+  d.setHours(0, 0, 0, 0);
+  d.setDate(d.getDate() - (days - 1));
+  return d.getTime();
+}
+
+function dayInCutoff(dateStr) {
+  if (!dateStr) return false;
+  var t = new Date(dateStr + 'T00:00:00');
+  return t.getTime() >= rangeCutoff();
+}
+
+// Usage inside the active date range (true daily tokens, not whole-session).
+function sessionUsageInRange(s) {
+  if (activeRange === 'all') {
+    return {
+      requests: s.Requests || 0,
+      inputTokens: s.InputTok || 0,
+      outputTokens: s.OutputTok || 0,
+      cacheRead: s.CacheRead || 0,
+      models: s.ModelStats || []
+    };
+  }
+  var days = s.DayStats || [];
+  var acc = { requests: 0, inputTokens: 0, outputTokens: 0, cacheRead: 0, models: [] };
+  var byModel = {};
+  for (var i = 0; i < days.length; i++) {
+    var ds = days[i];
+    if (!dayInCutoff(ds.date)) continue;
+    acc.requests += ds.requests || 0;
+    acc.inputTokens += ds.inputTokens || 0;
+    acc.outputTokens += ds.outputTokens || 0;
+    acc.cacheRead += ds.cacheRead || 0;
+    var name = ds.name || 'unknown';
+    var m = byModel[name];
+    if (!m) {
+      m = byModel[name] = {
+        name: name, requests: 0, inputTokens: 0, outputTokens: 0, cacheRead: 0, cacheWrite: 0
+      };
+      acc.models.push(m);
+    }
+    m.requests += ds.requests || 0;
+    m.inputTokens += ds.inputTokens || 0;
+    m.outputTokens += ds.outputTokens || 0;
+    m.cacheRead += ds.cacheRead || 0;
+    m.cacheWrite += ds.cacheWrite || 0;
+  }
+  return acc;
+}
+
+function sessionHasUsageInRange(s) {
+  if (activeRange === 'all') return true;
+  var days = s.DayStats || [];
+  for (var i = 0; i < days.length; i++) {
+    if (dayInCutoff(days[i].date)) return true;
+  }
+  return false;
+}
+
 function matchesFilters(x) {
   var src = instanceOf(x.Source);
   if (activeProvider !== 'all' && providerOf(src) !== activeProvider) return false;
   if (activeSource !== 'all' && src !== activeSource) return false;
+  if (activeRange !== 'all' && !sessionHasUsageInRange(x)) return false;
   return true;
 }
 
@@ -1048,6 +1116,22 @@ function renderFilters(sessions) {
   }
   sbox.innerHTML = shtml;
 
+  // Date range: 全部 / 今日 / 近 7 日 / 近 30 日
+  var rbox = document.getElementById('rangeFilter');
+  var ropts = [
+    ['all', '全部'],
+    ['1d', '今日'],
+    ['7d', '近 7 日'],
+    ['30d', '近 30 日']
+  ];
+  var rhtml = '';
+  for (var ri = 0; ri < ropts.length; ri++) {
+    var rk = ropts[ri][0];
+    var ron = activeRange === rk ? ' on' : '';
+    rhtml += '<button type="button" class="' + ron.trim() + '" data-r="' + esc(rk) + '" aria-pressed="' + (activeRange === rk) + '">' + esc(ropts[ri][1]) + '</button>';
+  }
+  rbox.innerHTML = rhtml;
+
   var n = 0;
   for (var fi = 0; fi < sessions.length; fi++) {
     if (matchesFilters(sessions[fi])) n++;
@@ -1063,11 +1147,14 @@ function renderFilters(sessions) {
     if (!btn) return;
     var p = btn.getAttribute('data-p');
     var s = btn.getAttribute('data-s');
+    var r = btn.getAttribute('data-r');
     if (p != null) {
       activeProvider = p;
       activeSource = 'all';
     } else if (s != null) {
       activeSource = s;
+    } else if (r != null) {
+      activeRange = r;
     } else {
       return;
     }
@@ -1076,8 +1163,10 @@ function renderFilters(sessions) {
   }
   var pbox = document.getElementById('providerFilter');
   var sbox = document.getElementById('sourceFilter');
+  var rbox = document.getElementById('rangeFilter');
   if (pbox) pbox.addEventListener('click', onClick);
   if (sbox) sbox.addEventListener('click', onClick);
+  if (rbox) rbox.addEventListener('click', onClick);
 })();
 
 function render(d) {
@@ -1104,17 +1193,21 @@ function renderAll() {
   if (!lastData) return;
   var d = lastData;
   var list = lastSessions.filter(matchesFilters);
-  var unfiltered = (activeProvider === 'all' && activeSource === 'all');
+  var unfiltered = (activeProvider === 'all' && activeSource === 'all' && activeRange === 'all');
 
-  // KPIs from filtered sessions
+  // KPIs — when a date range is active, count only tokens from that range
+  // (not whole-session history of sessions merely touched today).
   var req = 0, inn = 0, out = 0, cache = 0, cost = 0;
+  var usageBySession = [];
   for (var i = 0; i < list.length; i++) {
     var s = list[i];
-    req += s.Requests || 0;
-    inn += s.InputTok || 0;
-    out += s.OutputTok || 0;
-    cache += s.CacheRead || 0;
-    if (!s.IsFree) cost += s.Cost || 0;
+    var u = sessionUsageInRange(s);
+    usageBySession.push(u);
+    req += u.requests || 0;
+    inn += u.inputTokens || 0;
+    out += u.outputTokens || 0;
+    cache += u.cacheRead || 0;
+    if (activeRange === 'all' && !s.IsFree) cost += s.Cost || 0;
   }
   var totalTok = inn + out + cache;
   var nSrc = {};
@@ -1152,8 +1245,8 @@ function renderAll() {
     '<span class="out"><i></i>输出<span class="val">' + fmtTok(out) + '</span></span>' +
     '<span class="cache"><i></i>缓存读<span class="val">' + fmtTok(cache) + '</span></span>';
 
-  renderModels(list, d.models || [], unfiltered);
-  renderSessions(list);
+  renderModels(list, d.models || [], unfiltered, usageBySession);
+  renderSessions(list, usageBySession);
   renderAlerts(list);
 }
 
@@ -1171,7 +1264,7 @@ function matchApiModel(name, apiModels) {
   return null;
 }
 
-function renderModels(list, apiList, unfiltered) {
+function renderModels(list, apiList, unfiltered, usageBySession) {
   var mtb = document.querySelector('#models tbody');
   // Unfiltered: use server-side aggregation (names include provider prefix, full t/s).
   if (unfiltered && apiList.length) {
@@ -1202,29 +1295,51 @@ function renderModels(list, apiList, unfiltered) {
   var agg = {};
   for (var si = 0; si < list.length; si++) {
     var s = list[si];
-    var name = s.Model || 'unknown';
-    var a = agg[name];
-    if (!a) {
-      a = agg[name] = {
-        name: name, sessions: 0, requests: 0,
-        inputTokens: 0, outputTokens: 0, cacheRead: 0, totalTokens: 0,
-        cost: 0, isFree: true, tokPerSec: 0
-      };
-      var hit = matchApiModel(name, apiModels);
-      if (hit) {
-        a.tokPerSec = hit.tokPerSec || 0;
-        if (hit.name) a.name = hit.name; // show provider-prefixed name
-      }
+    var u = (usageBySession && usageBySession[si]) || sessionUsageInRange(s);
+    var parts = (u.models && u.models.length) ? u.models : null;
+    if (!parts) {
+      parts = [{
+        name: s.Model || 'unknown',
+        requests: u.requests || 0,
+        inputTokens: u.inputTokens || 0,
+        outputTokens: u.outputTokens || 0,
+        cacheRead: u.cacheRead || 0,
+        cacheWrite: 0
+      }];
     }
-    a.sessions++;
-    a.requests += s.Requests || 0;
-    a.inputTokens += s.InputTok || 0;
-    a.outputTokens += s.OutputTok || 0;
-    a.cacheRead += s.CacheRead || 0;
-    a.totalTokens = a.inputTokens + a.outputTokens + a.cacheRead;
-    if (s.IsFree === false && s.Cost) {
-      a.cost += s.Cost;
-      a.isFree = false;
+    var sessionCounted = {};
+    for (var pi = 0; pi < parts.length; pi++) {
+      var part = parts[pi];
+      var name = part.name || 'unknown';
+      var a = agg[name];
+      if (!a) {
+        a = agg[name] = {
+          name: name, sessions: 0, requests: 0,
+          inputTokens: 0, outputTokens: 0, cacheRead: 0, totalTokens: 0,
+          cost: 0, isFree: true, tokPerSec: 0
+        };
+        var hit = matchApiModel(name, apiModels);
+        if (hit) {
+          a.tokPerSec = hit.tokPerSec || 0;
+          if (hit.name) a.name = hit.name;
+        }
+      }
+      if (!sessionCounted[name]) {
+        sessionCounted[name] = true;
+        a.sessions++;
+      }
+      a.requests += part.requests || 0;
+      a.inputTokens += part.inputTokens || 0;
+      a.outputTokens += part.outputTokens || 0;
+      a.cacheRead += part.cacheRead || 0;
+      a.totalTokens = a.inputTokens + a.outputTokens + a.cacheRead;
+    }
+    if (activeRange === 'all' && s.IsFree === false && s.Cost) {
+      var primary = s.Model || 'unknown';
+      if (agg[primary]) {
+        agg[primary].cost += s.Cost;
+        agg[primary].isFree = false;
+      }
     }
   }
   var models = [];
@@ -1255,16 +1370,17 @@ function renderModels(list, apiList, unfiltered) {
   }).join('');
 }
 
-function renderSessions(filtered) {
+function renderSessions(filtered, usageBySession) {
   var tb = document.querySelector('#sessions tbody');
   if (!filtered.length) {
     tb.innerHTML = '<tr><td colspan="12" class="empty">无会话</td></tr>';
     return;
   }
-  tb.innerHTML = filtered.slice(0, 80).map(function (x) {
+  tb.innerHTML = filtered.slice(0, 80).map(function (x, xi) {
     var src = instanceOf(x.Source);
     var p = providerOf(src);
     var c = srcClass(src);
+    var u = (usageBySession && usageBySession[xi]) || sessionUsageInRange(x);
     var models = x.Models || [];
     var modelLabel = x.Model || '';
     var modelTitle = modelLabel;
@@ -1281,12 +1397,12 @@ function renderSessions(filtered) {
       '<td class="trunc" title="' + esc(x.Title) + '">' + esc(x.Title) + '</td>' +
       '<td class="mono" title="' + esc(modelTitle) + '">' + modelLabel + '</td>' +
       '<td class="trunc" title="' + esc(x.Project) + '">' + esc(x.Project) + '</td>' +
-      '<td class="num">' + (x.Requests || 0) + '</td>' +
-      '<td class="num">' + fmtTok(x.InputTok) + '</td>' +
-      '<td class="num">' + fmtTok(x.OutputTok) + '</td>' +
-      '<td class="num">' + fmtTok(x.CacheRead) + '</td>' +
+      '<td class="num">' + (u.requests || 0) + '</td>' +
+      '<td class="num">' + fmtTok(u.inputTokens) + '</td>' +
+      '<td class="num">' + fmtTok(u.outputTokens) + '</td>' +
+      '<td class="num">' + fmtTok(u.cacheRead) + '</td>' +
       '<td class="num">' + fmtDur(x.Duration / 1e9) + '</td>' +
-      '<td class="num">' + fmtCost(x) + '</td>' +
+      '<td class="num">' + (activeRange === 'all' ? fmtCost(x) : '—') + '</td>' +
       '</tr>';
   }).join('');
 }
